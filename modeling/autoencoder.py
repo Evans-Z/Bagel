@@ -19,6 +19,22 @@ from safetensors.torch import load_file as load_sft
 
 @dataclass
 class AutoEncoderParams:
+    """
+    VAE autoencoder configuration (based on FLUX VAE from Black Forest Labs).
+
+    For BAGEL-7B-MoT (ae.safetensors, ~340MB):
+        resolution=256, in_channels=3, out_ch=3
+        downsample=8        → 1024px image becomes 128×128 latent spatially
+        ch=128              → base channel width
+        ch_mult=[1,2,4,4]   → channels at each level: [128, 256, 512, 512]
+        num_res_blocks=2    → ResNet blocks per level
+        z_channels=16       → latent has 16 channels
+        scale_factor=0.3611 → latent normalization: z = (z - shift) / scale
+        shift_factor=0.1159
+
+    Encode: image [B,3,H,W] → latent [B,16,H/8,W/8]
+    Decode: latent [B,16,H/8,W/8] → image [B,3,H,W]
+    """
     resolution: int
     in_channels: int
     downsample: int
@@ -120,6 +136,19 @@ class Upsample(nn.Module):
 
 
 class Encoder(nn.Module):
+    """
+    VAE Encoder: image → latent.
+
+    For BAGEL-7B-MoT (ch=128, ch_mult=[1,2,4,4], z_channels=16):
+        conv_in: Conv2d(3, 128, 3)
+        Level 0: 2×ResnetBlock(128→128), Downsample  — 256→128
+        Level 1: 2×ResnetBlock(128→256), Downsample  — 128→64
+        Level 2: 2×ResnetBlock(256→512), Downsample  — 64→32
+        Level 3: 2×ResnetBlock(512→512)               — 32 (no downsample at last level)
+        mid: ResnetBlock(512) → AttnBlock(512) → ResnetBlock(512)
+        norm_out + conv_out: Conv2d(512, 2*16=32, 1)  — 32 channels for mean+logvar
+        Total spatial downsample: 8× (from 3 Downsample layers)
+    """
     def __init__(
         self,
         resolution: int,
@@ -130,13 +159,13 @@ class Encoder(nn.Module):
         z_channels: int,
     ):
         super().__init__()
-        self.ch = ch
-        self.num_resolutions = len(ch_mult)
-        self.num_res_blocks = num_res_blocks
-        self.resolution = resolution
-        self.in_channels = in_channels
+        self.ch = ch                              # 128
+        self.num_resolutions = len(ch_mult)       # 4
+        self.num_res_blocks = num_res_blocks      # 2
+        self.resolution = resolution              # 256
+        self.in_channels = in_channels            # 3
         # downsampling
-        self.conv_in = nn.Conv2d(in_channels, self.ch, kernel_size=3, stride=1, padding=1)
+        self.conv_in = nn.Conv2d(in_channels, self.ch, kernel_size=3, stride=1, padding=1)  # Conv2d(3, 128)
 
         curr_res = resolution
         in_ch_mult = (1,) + tuple(ch_mult)
@@ -288,6 +317,14 @@ class DiagonalGaussian(nn.Module):
 
 
 class AutoEncoder(nn.Module):
+    """
+    FLUX-style VAE autoencoder (~84M params, ae.safetensors ~340MB).
+
+    For BAGEL-7B-MoT:
+        encode: [B, 3, H, W] → Encoder → DiagonalGaussian → scale/shift → [B, 16, H/8, W/8]
+        decode: [B, 16, H/8, W/8] → unscale/unshift → Decoder → [B, 3, H, W]
+        Example: 1024×1024 image → [1, 16, 128, 128] latent → [1, 3, 1024, 1024] reconstructed
+    """
     def __init__(self, params: AutoEncoderParams):
         super().__init__()
         self.encoder = Encoder(
@@ -309,15 +346,17 @@ class AutoEncoder(nn.Module):
         )
         self.reg = DiagonalGaussian()
 
-        self.scale_factor = params.scale_factor
-        self.shift_factor = params.shift_factor
+        self.scale_factor = params.scale_factor  # 0.3611
+        self.shift_factor = params.shift_factor  # 0.1159
 
     def encode(self, x: Tensor) -> Tensor:
+        # x: [B, 3, H, W] → encoder → [B, 32, H/8, W/8] → split mean/logvar → sample → [B, 16, H/8, W/8]
         z = self.reg(self.encoder(x))
-        z = self.scale_factor * (z - self.shift_factor)
+        z = self.scale_factor * (z - self.shift_factor)  # normalize latent
         return z
 
     def decode(self, z: Tensor) -> Tensor:
+        # z: [B, 16, H/8, W/8] → un-normalize → decoder → [B, 3, H, W]
         z = z / self.scale_factor + self.shift_factor
         return self.decoder(z)
 
@@ -337,16 +376,17 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_ae(local_path: str) -> AutoEncoder:
+    """Load the FLUX-style VAE autoencoder from ae.safetensors (~340MB, ~84M params)."""
     ae_params = AutoEncoderParams(
             resolution=256,
             in_channels=3,
-            downsample=8,
-            ch=128,
+            downsample=8,             # 8× spatial downsampling: 1024px → 128 latent
+            ch=128,                   # base channels: [128, 256, 512, 512] across 4 levels
             out_ch=3,
             ch_mult=[1, 2, 4, 4],
             num_res_blocks=2,
-            z_channels=16,
-            scale_factor=0.3611,
+            z_channels=16,            # latent channels (used in config.json vae_config)
+            scale_factor=0.3611,      # latent normalization
             shift_factor=0.1159,
     )
 
