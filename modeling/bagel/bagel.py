@@ -25,6 +25,19 @@ from tqdm import tqdm
 
 
 class BagelConfig(PretrainedConfig):
+    """
+    Configuration for the Bagel multimodal model.
+
+    For BAGEL-7B-MoT, the concrete values are:
+        llm_config:  Qwen2Config  — hidden_size=3584, num_heads=28, num_kv_heads=4, 28 layers, vocab=152064
+        vit_config:  SiglipVisionConfig — hidden_size=1152, num_heads=16, 27 layers, patch=14, image=980
+        vae_config:  AutoEncoderParams  — z_channels=16, downsample=8
+        latent_patch_size=2   → each VAE latent patch is 2×2 = 4 spatial positions
+        max_latent_size=32    → max 32×32=1024 latent tokens (64 used in app.py for 1024px images)
+        vit_max_num_patch_per_side=70  → max 70×70=4900 ViT tokens (for 980px / 14px patch)
+        connector_act="gelu_pytorch_tanh"
+        timestep_shift=1.0    → default; app.py overrides to 3.0 at inference
+    """
     def __init__(
         self,
         visual_gen=True,
@@ -55,35 +68,55 @@ class BagelConfig(PretrainedConfig):
 
 
 class Bagel(PreTrainedModel):
+    """
+    The top-level BAGEL model that orchestrates the LLM, ViT, and VAE.
+
+    For BAGEL-7B-MoT with Qwen2MoTDecoderLayer:
+        language_model: Qwen2ForCausalLM  — 28 MoT layers, 7B active / 14B total params
+        vit_model:      SiglipVisionModel — 26 encoder layers (27 in config, minus 1 in app.py)
+
+    Generation branch (visual_gen=True):
+        time_embedder:    TimestepEmbedder(3584)         — scalar t → [3584]
+        vae2llm:          Linear(64, 3584)               — latent patch → LLM hidden
+        llm2vae:          Linear(3584, 64)               — LLM hidden → latent patch (init to zero)
+        latent_pos_embed: PositionEmbedding(32, 3584)    — 32²=1024 sincos positions (or 64²=4096 at inference)
+
+    Understanding branch (visual_und=True):
+        vit_model:        SiglipVisionModel(1152-dim, 16 heads, 26 layers)
+        connector:        MLPconnector(1152, 3584, gelu)  — fc1: Linear(1152,3584), fc2: Linear(3584,3584)
+        vit_pos_embed:    PositionEmbedding(70, 3584)     — 70²=4900 sincos positions
+    """
     config_class = BagelConfig
     base_model_prefix = 'bagel'
 
     def __init__(self, language_model, vit_model, config: BagelConfig):
         super().__init__(config)    
         self.language_model = language_model
-        self.hidden_size = config.llm_config.hidden_size
-        self.use_moe = "Mo" in config.llm_config.layer_module
-        self.num_heads = config.llm_config.num_attention_heads
+        self.hidden_size = config.llm_config.hidden_size          # 3584
+        self.use_moe = "Mo" in config.llm_config.layer_module     # True for "Qwen2MoTDecoderLayer"
+        self.num_heads = config.llm_config.num_attention_heads    # 28
 
         if config.visual_gen:
-            self.latent_patch_size = config.latent_patch_size
-            self.timestep_shift = config.timestep_shift
-            self.latent_downsample = config.vae_config.downsample * config.latent_patch_size
-            self.max_latent_size = config.max_latent_size
-            self.latent_channel = config.vae_config.z_channels
-            self.patch_latent_dim = self.latent_patch_size ** 2 * self.latent_channel
-            self.time_embedder = TimestepEmbedder(self.hidden_size)
-            self.vae2llm = nn.Linear(self.patch_latent_dim, self.hidden_size)
-            self.llm2vae = nn.Linear(self.hidden_size, self.patch_latent_dim)
-            self.latent_pos_embed = PositionEmbedding(self.max_latent_size, self.hidden_size)
+            self.latent_patch_size = config.latent_patch_size     # 2
+            self.timestep_shift = config.timestep_shift           # 1.0 (overridden to 3.0 at inference)
+            self.latent_downsample = config.vae_config.downsample * config.latent_patch_size  # 8*2=16
+            self.max_latent_size = config.max_latent_size         # 32 (or 64 in app.py)
+            self.latent_channel = config.vae_config.z_channels    # 16
+            self.patch_latent_dim = self.latent_patch_size ** 2 * self.latent_channel  # 2²*16=64
+            self.time_embedder = TimestepEmbedder(self.hidden_size)          # TimestepEmbedder(3584)
+            self.vae2llm = nn.Linear(self.patch_latent_dim, self.hidden_size) # Linear(64, 3584)
+            self.llm2vae = nn.Linear(self.hidden_size, self.patch_latent_dim) # Linear(3584, 64), init to zero
+            self.latent_pos_embed = PositionEmbedding(self.max_latent_size, self.hidden_size)  # (32, 3584)
 
         if config.visual_und:
             self.vit_model = vit_model
-            self.vit_patch_size = config.vit_config.patch_size
-            self.vit_max_num_patch_per_side = config.vit_max_num_patch_per_side
-            self.vit_hidden_size = config.vit_config.hidden_size
+            self.vit_patch_size = config.vit_config.patch_size                # 14
+            self.vit_max_num_patch_per_side = config.vit_max_num_patch_per_side  # 70
+            self.vit_hidden_size = config.vit_config.hidden_size              # 1152
             self.connector = MLPconnector(self.vit_hidden_size, self.hidden_size, config.connector_act)
+            # connector: MLP(1152 → 3584 → 3584) with gelu_pytorch_tanh
             self.vit_pos_embed = PositionEmbedding(self.vit_max_num_patch_per_side, self.hidden_size)
+            # vit_pos_embed: 70²=4900 positions, each 3584-dim
 
         if config.interpolate_pos:
             self.get_flattened_position_ids = get_flattened_position_ids_interpolate
@@ -148,7 +181,9 @@ class Bagel(PreTrainedModel):
             packed_timesteps: 1-D float tensor, flow timesteps. 0 indicates use clean image.
             mse_loss_indexes: 1-D bool tensor, where to compute mse loss.
         """
+        # embed_tokens: Embedding(152064, 3584) — vocab to hidden
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
+        # packed_sequence: [total_seq_len, 3584] — the unified sequence buffer
         packed_sequence = packed_text_embedding.new_zeros(size=(sequence_length, self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
@@ -167,45 +202,55 @@ class Bagel(PreTrainedModel):
             cu_seqlens = torch.nn.functional.pad(torch.cumsum(vit_token_seqlens, dim=0), (1, 0))
             cu_seqlens = cu_seqlens.to(torch.int32)
             max_seqlen = torch.max(vit_token_seqlens).item()
+            # SigLIP ViT: packed_vit_tokens [N_patches, 14²×3=588] → [N_patches, 1152]
             packed_vit_token_embed = self.vit_model(
                 packed_pixel_values=packed_vit_tokens, 
                 packed_flattened_position_ids=packed_vit_position_ids,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
+            # connector MLP: [N_patches, 1152] → [N_patches, 3584]
             packed_vit_token_embed = self.connector(packed_vit_token_embed)
+            # add 2D sincos position embedding: [N_patches, 3584]
             vit_token_pos_emb = self.vit_pos_embed(packed_vit_position_ids)
             packed_vit_token_embed = packed_vit_token_embed + vit_token_pos_emb
             packed_sequence[packed_vit_token_indexes] = packed_vit_token_embed
 
         if self.config.visual_gen:
-            p = self.latent_patch_size
+            p = self.latent_patch_size  # 2
             packed_latent = []
             for latent, (h, w) in zip(padded_latent, patchified_vae_latent_shapes):
+                # latent: [16, H_latent, W_latent] → patchify into 2×2 groups
+                # e.g. for 1024×1024 image: [16, 128, 128] → [64×64=4096, 2²×16=64]
                 latent = latent[:, :h * p, :w * p].reshape(self.latent_channel, h, p, w, p)
                 latent = torch.einsum("chpwq->hwpqc", latent).reshape(-1, p * p * self.latent_channel)
                 packed_latent.append(latent)
-            packed_latent_clean = torch.cat(packed_latent, dim=0)
+            packed_latent_clean = torch.cat(packed_latent, dim=0)  # [N_latent_tokens, 64]
 
+            # Flow matching: x_t = (1-t)*x_clean + t*noise, where t ~ sigmoid(logit-normal)
             noise = torch.randn_like(packed_latent_clean)
             packed_timesteps = torch.sigmoid(packed_timesteps)
             packed_timesteps = self.timestep_shift * packed_timesteps / (1 + (self.timestep_shift - 1) * packed_timesteps)
             packed_latent = (1 - packed_timesteps[:, None]) * packed_latent_clean + packed_timesteps[:, None] * noise
-            packed_timestep_embeds = self.time_embedder(packed_timesteps)
-            latent_token_pos_emb = self.latent_pos_embed(packed_latent_position_ids)
+            packed_timestep_embeds = self.time_embedder(packed_timesteps)  # [N, 3584]
+            latent_token_pos_emb = self.latent_pos_embed(packed_latent_position_ids)  # [N, 3584]
+            # vae2llm: Linear(64, 3584) — project latent patch + add timestep + position
             packed_latent = self.vae2llm(packed_latent) + packed_timestep_embeds + latent_token_pos_emb
             packed_sequence[packed_vae_token_indexes] = packed_latent
 
+        # MoT routing: text+ViT → understanding expert, VAE → generation expert
         extra_inputs = {}
         if self.use_moe:
             packed_und_token_indexes = packed_text_indexes
             if packed_vit_token_indexes is not None:
                 packed_und_token_indexes=torch.cat([packed_text_indexes, packed_vit_token_indexes], dim=0)
             extra_inputs.update(
-                packed_und_token_indexes=packed_und_token_indexes,
-                packed_gen_token_indexes=packed_vae_token_indexes,
+                packed_und_token_indexes=packed_und_token_indexes,   # → q/k/v_proj, mlp
+                packed_gen_token_indexes=packed_vae_token_indexes,   # → q/k/v_proj_moe_gen, mlp_moe_gen
             )
 
+        # Forward through 28 Qwen2MoTDecoderLayer layers
+        # last_hidden_state: [total_seq_len, 3584]
         last_hidden_state = self.language_model(
             packed_sequence=packed_sequence,
             sample_lens=sample_lens,
@@ -214,15 +259,19 @@ class Bagel(PreTrainedModel):
             **extra_inputs,
         )
 
+        # Generation loss: MSE on predicted velocity in latent space
         mse = None
         if self.config.visual_gen:
+            # llm2vae: Linear(3584, 64) — predict velocity for each latent token
             packed_mse_preds = self.llm2vae(last_hidden_state[mse_loss_indexes])
             target = noise - packed_latent_clean # NOTE: v_t=dx_t/dt=x_1-x_0, pointing from data to noise
             has_mse = packed_timesteps > 0
             mse = (packed_mse_preds - target[has_mse]) ** 2
 
+        # Understanding loss: cross-entropy on text tokens
         ce = None
         if ce_loss_indexes is not None:
+            # lm_head: Linear(3584, 152064) — project to vocab logits
             packed_ce_preds = self.language_model.lm_head(last_hidden_state[ce_loss_indexes])
             ce = F.cross_entropy(packed_ce_preds, packed_label_ids, reduction="none")
 
@@ -688,11 +737,13 @@ class Bagel(PreTrainedModel):
             model_pred_text_cache_dic, model_pred_text_current = None, None
             model_pred_img_cache_dic, model_pred_img_current = None, None
     
-        x_t = packed_init_noises
+        x_t = packed_init_noises  # [N_latent_tokens, 64] ~ N(0,1), e.g. [4096, 64] for 1024×1024
 
+        # Shifted timestep schedule: linspace 1→0, shifted by timestep_shift (default 3.0 at inference)
+        # Higher shift → more steps at early (layout) phase
         timesteps = torch.linspace(1, 0, num_timesteps, device=x_t.device)
         timesteps = timestep_shift * timesteps / (1 + (timestep_shift - 1) * timesteps)
-        dts =  timesteps[:-1] - timesteps[1:]
+        dts =  timesteps[:-1] - timesteps[1:]   # step sizes, num_timesteps-1 = 49 steps
         timesteps = timesteps[:-1]
 
         for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
@@ -743,13 +794,16 @@ class Bagel(PreTrainedModel):
                 model_pred_img_current=model_pred_img_current,
             )
 
-            x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
+            # ODE step: x_{t-dt} = x_t - v_t * dt (velocity points data→noise, so subtract)
+            x_t = x_t - v_t.to(x_t.device) * dts[i]
         
         if enable_taylorseer:
             del model_pred_cache_dic, model_pred_current
             del model_pred_text_cache_dic, model_pred_text_current
             del model_pred_img_cache_dic, model_pred_img_current
 
+        # Split packed latent back per-image (remove 2 bracket tokens per image)
+        # Each element: [h*w, 64], e.g. [4096, 64] for a 1024×1024 image
         unpacked_latent = x_t.split((packed_seqlens - 2).tolist())
         return unpacked_latent
 
@@ -793,18 +847,21 @@ class Bagel(PreTrainedModel):
         model_pred_img_cache_dic: Optional[Dict[str, Any]] = None,
         model_pred_img_current: Optional[int] = None,
     ):
-        packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
+        # Embed bracket tokens (<start_of_image>, <end_of_image>)
+        packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)  # [2, 3584]
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
 
+        # Project noisy latent into LLM space: [N, 64] → [N, 3584] + timestep + position
         assert timestep.unique().shape[0] == 1
-        packed_pos_embed = self.latent_pos_embed(packed_vae_position_ids)
-        packed_timestep_embeds = self.time_embedder(timestep)
-        x_t = self.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed
+        packed_pos_embed = self.latent_pos_embed(packed_vae_position_ids)  # [N, 3584]
+        packed_timestep_embeds = self.time_embedder(timestep)              # [N, 3584]
+        x_t = self.vae2llm(x_t) + packed_timestep_embeds + packed_pos_embed  # [N, 3584]
         if x_t.dtype != packed_sequence.dtype:
             x_t = x_t.to(packed_sequence.dtype)
         packed_sequence[packed_vae_token_indexes] = x_t
 
+        # mode="gen": bracket tokens → und expert, VAE tokens → gen expert
         extra_inputs = {}
         if self.use_moe:
             extra_inputs = {
@@ -817,6 +874,7 @@ class Bagel(PreTrainedModel):
             self.language_model.model.cache_dic = model_pred_cache_dic
             self.language_model.model.current = model_pred_current
 
+        # Pass 1 (main): attend to full context KV cache (text + image)
         output = self.language_model.forward_inference(
             packed_query_sequence=packed_sequence,
             query_lens=packed_seqlens,
@@ -825,14 +883,16 @@ class Bagel(PreTrainedModel):
             past_key_values=past_key_values,
             key_values_lens=key_values_lens,
             packed_key_value_indexes=packed_key_value_indexes,
-            update_past_key_values=False,
-            is_causal=False,
+            update_past_key_values=False,   # KV cache is read-only during denoising
+            is_causal=False,                # latent tokens attend bidirectionally
             **extra_inputs,
         )
+        # llm2vae: Linear(3584, 64) — extract velocity prediction for latent tokens only
         v_t = self.llm2vae(output.packed_query_sequence)
-        v_t = v_t[packed_vae_token_indexes]
+        v_t = v_t[packed_vae_token_indexes]  # [N_latent, 64]
 
         if cfg_text_scale > 1.0:
+            # Pass 2 (text CFG): attend to text-dropped context (image only, no text prompt)
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_text_cache_dic
                 self.language_model.model.current = model_pred_text_current
@@ -852,6 +912,7 @@ class Bagel(PreTrainedModel):
             cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
 
         if cfg_img_scale > 1.0:
+            # Pass 3 (image CFG): attend to image-dropped context (text only, no input image)
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_img_cache_dic
                 self.language_model.model.current = model_pred_img_current
@@ -870,8 +931,13 @@ class Bagel(PreTrainedModel):
             cfg_img_v_t = self.llm2vae(cfg_img_output.packed_query_sequence)
             cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]
 
+        # ── CFG composition ──
+        # Text CFG:  v_text = v_uncond + scale * (v_cond - v_uncond), amplifying text influence
+        # Image CFG: v_final = v_no_img + scale * (v_text - v_no_img), preserving image details
+        # Renorm prevents magnitude explosion from guidance scaling
         if cfg_text_scale > 1.0:
             if cfg_renorm_type == "text_channel":
+                # "text_channel": renorm per-token BEFORE image CFG (good for editing, may cause blur)
                 v_t_text_ = cfg_text_v_t + cfg_text_scale * (v_t - cfg_text_v_t)
                 norm_v_t = torch.norm(v_t, dim=-1, keepdim=True)
                 norm_v_t_text_ = torch.norm(v_t_text_, dim=-1, keepdim=True)
@@ -882,6 +948,7 @@ class Bagel(PreTrainedModel):
                 else:
                     v_t = v_t_text
             else:
+                # "global"/"channel": compose text+image CFG first, then renorm
                 v_t_text_ = cfg_text_v_t + cfg_text_scale * (v_t - cfg_text_v_t)
                 
                 if cfg_img_scale > 1.0:
@@ -889,19 +956,18 @@ class Bagel(PreTrainedModel):
                 else:
                     v_t_ = v_t_text_
 
-                # NOTE norm is computed over all dimensions, thus currently only supports batch_size = 1 with navit
+                # Renorm: scale = ||v_original|| / ||v_guided||, clamped to [cfg_renorm_min, 1.0]
                 if cfg_renorm_type == "global":
-                    norm_v_t = torch.norm(v_t)
+                    norm_v_t = torch.norm(v_t)       # scalar norm over all tokens+channels
                     norm_v_t_ = torch.norm(v_t_)
                 elif cfg_renorm_type == "channel":
-                    norm_v_t = torch.norm(v_t, dim=-1, keepdim=True)
+                    norm_v_t = torch.norm(v_t, dim=-1, keepdim=True)    # per-token norm
                     norm_v_t_ = torch.norm(v_t_, dim=-1, keepdim=True)
                 else:
                     raise NotImplementedError(f"{cfg_renorm_type} is not suppoprted")
                 scale = (norm_v_t / (norm_v_t_ + 1e-8)).clamp(min=cfg_renorm_min, max=1.0)
                 v_t = v_t_ * scale
         else:
-            # No CFG
             pass
 
         return v_t
@@ -929,15 +995,15 @@ class Bagel(PreTrainedModel):
     @torch.no_grad
     def generate_text(
         self,
-        past_key_values: NaiveCache,
+        past_key_values: NaiveCache,       # KV cache from prefilled context (image + text)
         packed_key_value_indexes: torch.LongTensor,
-        key_values_lens: torch.IntTensor,
-        packed_start_tokens: torch.LongTensor,
+        key_values_lens: torch.IntTensor,  # total cached token count
+        packed_start_tokens: torch.LongTensor,  # [batch], initial <bos> token
         packed_query_position_ids: torch.LongTensor,
-        max_length: int,
-        do_sample: bool = False,
+        max_length: int,                   # max tokens to generate
+        do_sample: bool = False,           # greedy if False
         temperature: float = 1.0,
-        end_token_id: int = None,
+        end_token_id: int = None,          # <eos> = 151645
     ):
         step = 0
         generated_sequence = []
@@ -974,7 +1040,8 @@ class Bagel(PreTrainedModel):
                 **extra_inputs,
             )
             past_key_values = output.past_key_values
-            packed_query_sequence = output.packed_query_sequence
+            packed_query_sequence = output.packed_query_sequence  # [batch, 3584]
+            # lm_head: Linear(3584, 152064) → vocab logits
             pred_logits = self.language_model.lm_head(packed_query_sequence)
 
             if do_sample:

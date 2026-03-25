@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen2Model (MoT) — Architecture Deep Dive</title>
+<style>
+:root {
+  --bg:#0c0e14; --s1:#141825; --s2:#1c2030; --s3:#252a3a;
+  --brd:#2a3048; --tx:#dde0ed; --tx2:#858da6; --tx3:#555c74;
+  --blue:#6c8cff; --blue2:#4a66d0; --org:#fb923c; --org2:#d97706;
+  --pur:#a78bfa; --pur2:#7c5cc4; --grn:#34d399; --grn2:#059669;
+  --pnk:#f472b6; --red:#f87171; --cyan:#22d3ee; --yel:#fbbf24;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);line-height:1.6;overflow-x:hidden}
+.wrap{max-width:1100px;margin:0 auto;padding:0 20px}
+
+/* Header */
+.hdr{text-align:center;padding:48px 20px 28px}
+.hdr h1{font-size:2rem;font-weight:800;background:linear-gradient(135deg,var(--blue),var(--pur));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hdr .sub{color:var(--tx2);font-size:.92rem;margin-top:6px}
+.hdr .badge-row{display:flex;justify-content:center;gap:10px;margin-top:14px;flex-wrap:wrap}
+.hdr .hb{padding:5px 14px;border-radius:8px;font-size:.78rem;font-weight:700;letter-spacing:.3px}
+.hb-blue{background:rgba(108,140,255,.12);color:var(--blue);border:1px solid rgba(108,140,255,.25)}
+.hb-org{background:rgba(251,146,60,.12);color:var(--org);border:1px solid rgba(251,146,60,.25)}
+.hb-pur{background:rgba(167,139,250,.12);color:var(--pur);border:1px solid rgba(167,139,250,.25)}
+
+/* Tabs */
+.tabs{display:flex;justify-content:center;gap:10px;padding:8px 0 28px;flex-wrap:wrap}
+.tab{padding:10px 24px;border-radius:10px;border:1.5px solid var(--brd);background:var(--s1);color:var(--tx2);font-size:.88rem;font-weight:600;cursor:pointer;transition:.25s}
+.tab:hover{border-color:var(--blue);color:var(--tx)}
+.tab.active{background:linear-gradient(135deg,var(--blue2),var(--blue));color:#fff;border-color:transparent;box-shadow:0 3px 16px rgba(108,140,255,.25)}
+
+/* View containers */
+.view{display:none}.view.active{display:block}
+
+/* ─── VISUAL VIEW ─── */
+/* The big model diagram */
+.model-card{background:var(--s1);border:1px solid var(--brd);border-radius:16px;padding:28px;margin-bottom:24px}
+.model-card h2{font-size:1.15rem;font-weight:700;margin-bottom:4px}
+.model-card .dim{color:var(--tx2);font-size:.82rem;margin-bottom:18px}
+
+/* Module block */
+.mod{background:var(--s2);border:1px solid var(--brd);border-radius:12px;padding:16px 18px;margin-bottom:10px;position:relative;transition:.2s}
+.mod:hover{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
+.mod-name{font-weight:700;font-size:.92rem;display:flex;align-items:center;gap:8px}
+.mod-type{font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:5px;display:inline-block}
+.mod-dim{color:var(--tx2);font-size:.8rem;margin-top:4px;font-family:'JetBrains Mono','Fira Code',monospace}
+.mod-sub{margin-top:10px;padding-left:16px;border-left:2px solid var(--brd)}
+.mod-sub .mod{margin-bottom:8px}
+
+/* Color types */
+.t-emb .mod-type{background:rgba(34,211,238,.12);color:var(--cyan)}
+.t-rope .mod-type{background:rgba(251,191,36,.12);color:var(--yel)}
+.t-layer .mod-type{background:rgba(108,140,255,.12);color:var(--blue)}
+.t-norm .mod-type{background:rgba(52,211,153,.12);color:var(--grn)}
+.t-attn .mod-type{background:rgba(244,114,182,.12);color:var(--pnk)}
+.t-mlp .mod-type{background:rgba(167,139,250,.12);color:var(--pur)}
+.t-proj .mod-type{background:rgba(248,113,113,.12);color:var(--red)}
+.t-und .mod-type{background:rgba(251,146,60,.12);color:var(--org)}
+.t-gen .mod-type{background:rgba(167,139,250,.12);color:var(--pur)}
+.t-cache .mod-type{background:rgba(251,191,36,.12);color:var(--yel)}
+
+/* Layer expander */
+.layer-expand{cursor:pointer;user-select:none}
+.layer-expand .arrow{display:inline-block;transition:.2s;font-size:.7rem;margin-right:4px}
+.layer-expand.open .arrow{transform:rotate(90deg)}
+.layer-body{display:none;margin-top:10px}
+.layer-expand.open~.layer-body{display:block}
+
+/* Flow arrow */
+.flow{display:flex;align-items:center;justify-content:center;height:22px;opacity:.4}
+.flow svg{transform:scale(.8)}
+
+/* Side-by-side expert boxes */
+.expert-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.expert-box{background:var(--bg);border-radius:10px;padding:12px 14px;border:1px solid var(--brd)}
+.expert-box h4{font-size:.82rem;font-weight:700;margin-bottom:6px}
+.expert-box.und{border-color:rgba(251,146,60,.25)}
+.expert-box.und h4{color:var(--org)}
+.expert-box.gen{border-color:rgba(167,139,250,.25)}
+.expert-box.gen h4{color:var(--pur)}
+.param{font-family:'JetBrains Mono','Fira Code',monospace;font-size:.75rem;color:var(--tx2);line-height:1.8}
+.param b{color:var(--tx);font-weight:600}
+.param .d{color:var(--yel)}
+
+/* ─── DATA FLOW VIEW ─── */
+.df-step{display:flex;gap:18px;margin-bottom:6px;align-items:flex-start;opacity:0;transform:translateY(16px);animation:fadeUp .4s forwards}
+@keyframes fadeUp{to{opacity:1;transform:none}}
+.df-step:nth-child(1){animation-delay:.02s}.df-step:nth-child(2){animation-delay:.06s}.df-step:nth-child(3){animation-delay:.1s}.df-step:nth-child(4){animation-delay:.14s}.df-step:nth-child(5){animation-delay:.18s}.df-step:nth-child(6){animation-delay:.22s}.df-step:nth-child(7){animation-delay:.26s}.df-step:nth-child(8){animation-delay:.3s}.df-step:nth-child(9){animation-delay:.34s}.df-step:nth-child(10){animation-delay:.38s}.df-step:nth-child(11){animation-delay:.42s}
+.df-num{flex-shrink:0;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;margin-top:14px;background:rgba(108,140,255,.12);color:var(--blue)}
+.df-card{flex:1;background:var(--s1);border:1px solid var(--brd);border-radius:12px;padding:14px 18px}
+.df-card h3{font-size:.95rem;font-weight:700;margin-bottom:4px}
+.df-card .desc{color:var(--tx2);font-size:.84rem}
+.df-card code{background:var(--s3);padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--cyan);border:1px solid var(--brd)}
+.flow-sm{height:16px;display:flex;align-items:center;justify-content:center;opacity:.3}
+
+/* ─── UML VIEW ─── */
+.uml-card{background:var(--s1);border:1px solid var(--brd);border-radius:16px;padding:28px;margin-bottom:24px}
+.uml-card h2{font-size:1.1rem;font-weight:700;margin-bottom:16px;color:var(--tx)}
+pre.uml{background:var(--bg);border:1px solid var(--brd);border-radius:10px;padding:18px;font-family:'JetBrains Mono','Fira Code',monospace;font-size:.72rem;line-height:1.7;color:var(--tx2);overflow-x:auto;white-space:pre}
+pre.uml .cls{color:var(--blue);font-weight:700}
+pre.uml .field{color:var(--grn)}
+pre.uml .meth{color:var(--pnk)}
+pre.uml .rel{color:var(--yel)}
+pre.uml .note{color:var(--tx3);font-style:italic}
+
+/* Responsive */
+@media(max-width:700px){.expert-row{grid-template-columns:1fr}.wrap{padding:0 10px}.model-card{padding:16px}}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="hdr">
+  <h1>Qwen2Model — MoT Architecture</h1>
+  <div class="sub">Complete structural breakdown of the Qwen2 backbone used in BAGEL-7B-MoT</div>
+  <div class="badge-row">
+    <span class="hb hb-blue">28 MoT Layers</span>
+    <span class="hb hb-blue">3584 Hidden Dim</span>
+    <span class="hb hb-org">28 Attn Heads (4 KV)</span>
+    <span class="hb hb-pur">7B Active / 14B Total</span>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="wrap">
+<div class="tabs">
+  <div class="tab active" data-view="visual">🏗️ Architecture</div>
+  <div class="tab" data-view="dataflow">🔄 Data Flow</div>
+  <div class="tab" data-view="uml">📐 UML Diagram</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- VISUAL VIEW -->
+<!-- ═══════════════════════════════════════════════ -->
+<div class="view active" id="view-visual">
+
+<!-- Top-level Qwen2ForCausalLM -->
+<div class="model-card">
+  <h2>Qwen2ForCausalLM</h2>
+  <div class="dim">Top-level model wrapper — contains the backbone + LM head</div>
+
+  <!-- model = Qwen2Model -->
+  <div class="mod">
+    <div class="mod-name">model <span class="mod-type t-layer">Qwen2Model</span></div>
+    <div class="mod-dim">The transformer backbone — see below for full expansion</div>
+  </div>
+
+  <!-- lm_head -->
+  <div class="mod t-proj">
+    <div class="mod-name">lm_head <span class="mod-type">Linear</span></div>
+    <div class="mod-dim">Linear(<span style="color:var(--yel)">3584</span>, <span style="color:var(--yel)">152064</span>, bias=False) — projects hidden → vocab logits</div>
+  </div>
+</div>
+
+<!-- Qwen2Model expanded -->
+<div class="model-card">
+  <h2>Qwen2Model</h2>
+  <div class="dim">The transformer backbone — embed_tokens → 28 decoder layers → final norm</div>
+
+  <!-- embed_tokens -->
+  <div class="mod t-emb">
+    <div class="mod-name">embed_tokens <span class="mod-type">Embedding</span></div>
+    <div class="mod-dim">Embedding(<span style="color:var(--yel)">152064</span>, <span style="color:var(--yel)">3584</span>) — token ID → 3584-dim vector</div>
+  </div>
+
+  <div class="flow"><svg width="16" height="18"><path d="M8 0L8 18" stroke="#2a3048" stroke-width="2" stroke-dasharray="3"/><polygon points="5,13 8,18 11,13" fill="#2a3048"/></svg></div>
+
+  <!-- rotary_emb -->
+  <div class="mod t-rope">
+    <div class="mod-name">rotary_emb <span class="mod-type">Qwen2RotaryEmbedding</span></div>
+    <div class="mod-dim">rope_theta=<span style="color:var(--yel)">1,000,000</span> &nbsp;|&nbsp; max_position_embeddings=<span style="color:var(--yel)">32,768</span> &nbsp;|&nbsp; head_dim=<span style="color:var(--yel)">128</span><br>Produces (cos, sin) pairs for each position — shared across all decoder layers</div>
+  </div>
+
+  <div class="flow"><svg width="16" height="18"><path d="M8 0L8 18" stroke="#2a3048" stroke-width="2" stroke-dasharray="3"/><polygon points="5,13 8,18 11,13" fill="#2a3048"/></svg></div>
+
+  <!-- Decoder layers -->
+  <div class="mod t-layer" style="border-color:rgba(108,140,255,.35)">
+    <div class="mod-name layer-expand" onclick="this.classList.toggle('open')">
+      <span class="arrow">▶</span> layers <span class="mod-type">28 × Qwen2MoTDecoderLayer</span>
+    </div>
+    <div class="mod-dim">Each layer: 2 expert sets (Understand + Generate) sharing one attention computation<br>
+    Click to expand a single layer's full structure ▼</div>
+
+    <div class="layer-body">
+
+      <!-- Single MoTDecoderLayer -->
+      <div style="background:var(--bg);border-radius:12px;padding:16px;border:1px solid var(--brd);margin-top:6px">
+        <div style="font-weight:700;font-size:.9rem;margin-bottom:12px;color:var(--blue)">
+          Qwen2MoTDecoderLayer[i] &nbsp;<span style="font-weight:400;color:var(--tx2);font-size:.8rem">i = 0..27</span>
+        </div>
+
+        <!-- Input Layernorm -->
+        <div class="expert-row">
+          <div class="expert-box und">
+            <h4>Understanding Path</h4>
+            <div class="param"><b>input_layernorm</b>: RMSNorm(<span class="d">3584</span>, eps=1e-6)</div>
+          </div>
+          <div class="expert-box gen">
+            <h4>Generation Path</h4>
+            <div class="param"><b>input_layernorm_moe_gen</b>: RMSNorm(<span class="d">3584</span>, eps=1e-6)</div>
+          </div>
+        </div>
+
+        <div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+        <!-- Self Attention (PackedAttentionMoT) -->
+        <div style="background:var(--s2);border:1px solid rgba(244,114,182,.2);border-radius:10px;padding:14px;margin:4px 0">
+          <div style="font-weight:700;font-size:.85rem;color:var(--pnk);margin-bottom:10px">self_attn — PackedAttentionMoT</div>
+          <div class="expert-row">
+            <div class="expert-box und">
+              <h4>Understanding Q/K/V/O</h4>
+              <div class="param">
+                <b>q_proj</b>: Linear(<span class="d">3584</span>, <span class="d">3584</span>, bias) <span style="color:var(--tx3)">— 28 heads × 128</span><br>
+                <b>k_proj</b>: Linear(<span class="d">3584</span>, <span class="d">512</span>, bias) <span style="color:var(--tx3)">— 4 KV heads × 128</span><br>
+                <b>v_proj</b>: Linear(<span class="d">3584</span>, <span class="d">512</span>, bias)<br>
+                <b>o_proj</b>: Linear(<span class="d">3584</span>, <span class="d">3584</span>, no bias)<br>
+                <b>q_norm</b>: RMSNorm(<span class="d">128</span>)<br>
+                <b>k_norm</b>: RMSNorm(<span class="d">128</span>)
+              </div>
+            </div>
+            <div class="expert-box gen">
+              <h4>Generation Q/K/V/O</h4>
+              <div class="param">
+                <b>q_proj_moe_gen</b>: Linear(<span class="d">3584</span>, <span class="d">3584</span>, bias)<br>
+                <b>k_proj_moe_gen</b>: Linear(<span class="d">3584</span>, <span class="d">512</span>, bias)<br>
+                <b>v_proj_moe_gen</b>: Linear(<span class="d">3584</span>, <span class="d">512</span>, bias)<br>
+                <b>o_proj_moe_gen</b>: Linear(<span class="d">3584</span>, <span class="d">3584</span>, no bias)<br>
+                <b>q_norm_moe_gen</b>: RMSNorm(<span class="d">128</span>)<br>
+                <b>k_norm_moe_gen</b>: RMSNorm(<span class="d">128</span>)
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:10px;background:var(--bg);border-radius:8px;padding:10px 12px;border:1px solid var(--brd)">
+            <div class="param" style="text-align:center">
+              + <b style="color:var(--yel)">RoPE</b> (cos, sin from rotary_emb) &nbsp;→&nbsp;
+              <b style="color:var(--grn)">Flash Attention</b> (flash_attn_varlen_func, GQA 28:4=7:1) &nbsp;→&nbsp;
+              <b style="color:var(--yel)">KV Cache</b> (NaiveCache)<br>
+              <span style="color:var(--tx3)">All tokens attend to all tokens — routing only affects which Q/K/V/O weights are used</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="text-align:center;font-size:.78rem;color:var(--grn);margin:6px 0">+ residual connection</div>
+
+        <!-- Post-attn Layernorm + MLP -->
+        <div class="expert-row">
+          <div class="expert-box und">
+            <h4>Understanding MLP</h4>
+            <div class="param">
+              <b>post_attention_layernorm</b>: RMSNorm(<span class="d">3584</span>)<br>
+              <b>mlp</b> (Qwen2MLP, SiLU-gated):<br>
+              &nbsp;&nbsp;gate_proj: Linear(<span class="d">3584</span>, <span class="d">18944</span>, no bias)<br>
+              &nbsp;&nbsp;up_proj: &nbsp;Linear(<span class="d">3584</span>, <span class="d">18944</span>, no bias)<br>
+              &nbsp;&nbsp;down_proj: Linear(<span class="d">18944</span>, <span class="d">3584</span>, no bias)<br>
+              <span style="color:var(--tx3)">out = down(silu(gate(x)) * up(x))</span>
+            </div>
+          </div>
+          <div class="expert-box gen">
+            <h4>Generation MLP</h4>
+            <div class="param">
+              <b>post_attention_layernorm_moe_gen</b>: RMSNorm(<span class="d">3584</span>)<br>
+              <b>mlp_moe_gen</b> (Qwen2MLP, SiLU-gated):<br>
+              &nbsp;&nbsp;gate_proj: Linear(<span class="d">3584</span>, <span class="d">18944</span>, no bias)<br>
+              &nbsp;&nbsp;up_proj: &nbsp;Linear(<span class="d">3584</span>, <span class="d">18944</span>, no bias)<br>
+              &nbsp;&nbsp;down_proj: Linear(<span class="d">18944</span>, <span class="d">3584</span>, no bias)<br>
+              <span style="color:var(--tx3)">out = down(silu(gate(x)) * up(x))</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="text-align:center;font-size:.78rem;color:var(--grn);margin:6px 0">+ residual connection</div>
+
+        <!-- Routing legend -->
+        <div style="background:var(--bg);border-radius:8px;padding:10px 14px;margin-top:8px;border:1px solid var(--brd)">
+          <div class="param" style="text-align:center">
+            <b style="color:var(--org)">text + ViT tokens</b> → Understanding expert &nbsp;&nbsp;|&nbsp;&nbsp;
+            <b style="color:var(--pur)">VAE latent tokens</b> → Generation expert
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /layer-body -->
+  </div>
+
+  <div class="flow"><svg width="16" height="18"><path d="M8 0L8 18" stroke="#2a3048" stroke-width="2" stroke-dasharray="3"/><polygon points="5,13 8,18 11,13" fill="#2a3048"/></svg></div>
+
+  <!-- Final norms -->
+  <div class="expert-row">
+    <div class="mod t-norm" style="margin:0">
+      <div class="mod-name">norm <span class="mod-type">RMSNorm</span></div>
+      <div class="mod-dim">RMSNorm(<span style="color:var(--yel)">3584</span>, eps=1e-6) — applied to <b style="color:var(--org)">understanding</b> tokens</div>
+    </div>
+    <div class="mod t-norm" style="margin:0">
+      <div class="mod-name">norm_moe_gen <span class="mod-type">RMSNorm</span></div>
+      <div class="mod-dim">RMSNorm(<span style="color:var(--yel)">3584</span>, eps=1e-6) — applied to <b style="color:var(--pur)">generation</b> tokens</div>
+    </div>
+  </div>
+</div>
+
+<!-- NaiveCache -->
+<div class="model-card">
+  <h2>NaiveCache</h2>
+  <div class="dim">KV cache used during inference — stores key/value states from previous tokens</div>
+  <div class="mod t-cache">
+    <div class="mod-name">key_cache / value_cache <span class="mod-type">Dict[int, Tensor]</span></div>
+    <div class="mod-dim">
+      {0: <span style="color:var(--yel)">[N_kv, 4, 128]</span>, 1: ..., 27: ...} — one entry per layer<br>
+      N_kv = total cached tokens | 4 KV heads | 128 head_dim<br>
+      <span style="color:var(--tx3)">During generation denoising: KV cache is read-only (text/image context frozen)</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /view-visual -->
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- DATA FLOW VIEW -->
+<!-- ═══════════════════════════════════════════════ -->
+<div class="view" id="view-dataflow">
+<div class="model-card">
+  <h2>Forward Pass Data Flow — Qwen2Model</h2>
+  <div class="dim">Step-by-step tensor transformations through the model (inference, mode="gen")</div>
+</div>
+
+<div class="df-step"><div class="df-num">1</div><div class="df-card">
+  <h3>Input: packed_query_sequence</h3>
+  <div class="desc">A pre-assembled 1D tensor containing all token embeddings: <code>[&lt;start_img&gt;, latent₁...latentₙ, &lt;end_img&gt;]</code><br>Shape: <code>[seq_len, 3584]</code> — e.g. [4098, 3584] for a 1024×1024 image (4096 latent + 2 bracket tokens)</div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">2</div><div class="df-card">
+  <h3>RoPE: Compute position embeddings</h3>
+  <div class="desc"><code>rotary_emb(sequence, position_ids)</code> → <code>(cos, sin)</code> each <code>[1, seq_len, 128]</code><br>
+  rope_theta=1M, shared across all 28 layers. Position IDs are packed (not necessarily sequential).</div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">3</div><div class="df-card">
+  <h3>Enter layer loop (×28 Qwen2MoTDecoderLayer)</h3>
+  <div class="desc">Each layer processes the full sequence. In <code>mode="gen"</code>, tokens are routed by type.</div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">4</div><div class="df-card">
+  <h3>Input LayerNorm (dual)</h3>
+  <div class="desc">
+    <code>text_indexes → input_layernorm(x)</code> &nbsp;— RMSNorm(3584) for text/bracket tokens<br>
+    <code>vae_indexes → input_layernorm_moe_gen(x)</code> &nbsp;— RMSNorm(3584) for latent tokens<br>
+    Output: <code>[seq_len, 3584]</code>
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">5</div><div class="df-card">
+  <h3>Attention: Q/K/V projection (expert-routed)</h3>
+  <div class="desc">
+    Text tokens: <code>q = q_proj(x)</code> <code>[N_text, 3584]</code> &nbsp;→&nbsp; <code>[N_text, 28, 128]</code><br>
+    Latent tokens: <code>q = q_proj_moe_gen(x)</code> <code>[N_lat, 3584]</code> &nbsp;→&nbsp; <code>[N_lat, 28, 128]</code><br>
+    K/V similarly: <code>[N, 4, 128]</code> (GQA: 4 KV heads, each shared by 7 Q heads)<br>
+    Then: <code>q_norm / k_norm</code> (or <code>_moe_gen</code> variants) → RoPE rotation
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">6</div><div class="df-card">
+  <h3>Merge with KV Cache + Flash Attention</h3>
+  <div class="desc">
+    New K/V states are interleaved with cached K/V from previous context (text, images):<br>
+    <code>merged_key = [cached_K, new_K]</code> indexed by <code>packed_key_value_indexes</code> + <code>packed_query_indexes</code><br>
+    <code>flash_attn_varlen_func(Q, merged_K, merged_V, cu_seqlens_q, cu_seqlens_k, causal=False)</code><br>
+    Output: <code>[seq_len, 28, 128]</code> → reshape → <code>[seq_len, 3584]</code>
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">7</div><div class="df-card">
+  <h3>Output projection (expert-routed) + Residual</h3>
+  <div class="desc">
+    Text tokens: <code>out[text_idx] = o_proj(attn_out[text_idx])</code><br>
+    Latent tokens: <code>out[vae_idx] = o_proj_moe_gen(attn_out[vae_idx])</code><br>
+    Then: <code>x = residual + out</code> — first residual connection
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">8</div><div class="df-card">
+  <h3>Post-attention LayerNorm + MLP (expert-routed) + Residual</h3>
+  <div class="desc">
+    Text: <code>post_attention_layernorm(x)</code> → <code>mlp(x)</code> — SiLU gated: <code>down(silu(gate(x)) * up(x))</code><br>
+    Latent: <code>post_attention_layernorm_moe_gen(x)</code> → <code>mlp_moe_gen(x)</code><br>
+    <code>3584 → 18944 → 3584</code> for both paths<br>
+    Then: <code>x = residual + out</code> — second residual connection
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">9</div><div class="df-card">
+  <h3>Repeat for all 28 layers</h3>
+  <div class="desc">Output of layer <i>i</i> feeds into layer <i>i+1</i>. Shape stays <code>[seq_len, 3584]</code> throughout.</div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">10</div><div class="df-card">
+  <h3>Final LayerNorm (dual)</h3>
+  <div class="desc">
+    <code>text_indexes → norm(x)</code> &nbsp;— RMSNorm(3584)<br>
+    <code>vae_indexes → norm_moe_gen(x)</code> &nbsp;— RMSNorm(3584)<br>
+    Output: <code>[seq_len, 3584]</code>
+  </div>
+</div></div>
+<div class="flow-sm"><svg width="14" height="12"><polygon points="4,1 7,10 10,1" fill="#2a3048"/></svg></div>
+
+<div class="df-step"><div class="df-num">11</div><div class="df-card">
+  <h3>Output → BaseNavitOutputWithPast</h3>
+  <div class="desc">
+    Returns <code>(packed_query_sequence, past_key_values)</code><br>
+    The caller (Bagel) then uses <code>lm_head</code> for text or <code>llm2vae</code> for image generation on the relevant token positions.
+  </div>
+</div></div>
+
+</div><!-- /view-dataflow -->
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- UML VIEW -->
+<!-- ═══════════════════════════════════════════════ -->
+<div class="view" id="view-uml">
+
+<div class="uml-card">
+  <h2>Class Hierarchy UML (Mermaid-style)</h2>
+  <pre class="uml"><span class="note">%% BAGEL Qwen2Model — Class Diagram
+%% Paste into https://mermaid.live for rendered diagram</span>
+
+classDiagram
+    direction TB
+
+    <span class="cls">class Qwen2ForCausalLM</span> {
+        <span class="field">+model: Qwen2Model</span>
+        <span class="field">+vocab_size: 152064</span>
+        <span class="field">+lm_head: Linear(3584, 152064)</span>
+        <span class="meth">+forward_train(packed_sequence, ...)</span>
+        <span class="meth">+forward_inference(packed_query_sequence, ...)</span>
+        <span class="meth">+init_moe()</span>
+    }
+
+    <span class="cls">class Qwen2Model</span> {
+        <span class="field">+embed_tokens: Embedding(152064, 3584)</span>
+        <span class="field">+layers: ModuleList[28 × Qwen2MoTDecoderLayer]</span>
+        <span class="field">+norm: RMSNorm(3584)</span>
+        <span class="field">+norm_moe_gen: RMSNorm(3584)</span>
+        <span class="field">+rotary_emb: Qwen2RotaryEmbedding</span>
+        <span class="field">+use_moe: True</span>
+        <span class="meth">+forward_train(packed_sequence, sample_lens, attention_mask, position_ids, und_idx, gen_idx)</span>
+        <span class="meth">+forward_inference(packed_query_seq, query_lens, position_ids, ..., mode, vae_idx, text_idx)</span>
+    }
+
+    <span class="cls">class Qwen2MoTDecoderLayer</span> {
+        <span class="field">+self_attn: PackedAttentionMoT</span>
+        <span class="field">+mlp: Qwen2MLP</span>
+        <span class="field">+mlp_moe_gen: Qwen2MLP</span>
+        <span class="field">+input_layernorm: RMSNorm(3584)</span>
+        <span class="field">+input_layernorm_moe_gen: RMSNorm(3584)</span>
+        <span class="field">+post_attention_layernorm: RMSNorm(3584)</span>
+        <span class="field">+post_attention_layernorm_moe_gen: RMSNorm(3584)</span>
+        <span class="meth">+forward_train(packed_seq, sample_lens, mask, pos_emb, und_idx, gen_idx)</span>
+        <span class="meth">+forward_inference(query_seq, ..., mode, vae_idx, text_idx)</span>
+    }
+
+    <span class="cls">class PackedAttentionMoT</span> {
+        <span class="note">%% Inherits from Qwen2Attention (q/k/v/o_proj)</span>
+        <span class="field">+q_proj: Linear(3584, 3584, bias)</span>
+        <span class="field">+k_proj: Linear(3584, 512, bias)</span>
+        <span class="field">+v_proj: Linear(3584, 512, bias)</span>
+        <span class="field">+o_proj: Linear(3584, 3584)</span>
+        <span class="field">+q_norm: RMSNorm(128)</span>
+        <span class="field">+k_norm: RMSNorm(128)</span>
+        <span class="field">+q_proj_moe_gen: Linear(3584, 3584, bias)</span>
+        <span class="field">+k_proj_moe_gen: Linear(3584, 512, bias)</span>
+        <span class="field">+v_proj_moe_gen: Linear(3584, 512, bias)</span>
+        <span class="field">+o_proj_moe_gen: Linear(3584, 3584)</span>
+        <span class="field">+q_norm_moe_gen: RMSNorm(128)</span>
+        <span class="field">+k_norm_moe_gen: RMSNorm(128)</span>
+        <span class="meth">+forward_train(packed_seq, sample_lens, mask, pos_emb, und_idx, gen_idx)</span>
+        <span class="meth">+forward_inference(query_seq, ..., mode, vae_idx, text_idx)</span>
+    }
+
+    <span class="cls">class Qwen2MLP</span> {
+        <span class="field">+gate_proj: Linear(3584, 18944)</span>
+        <span class="field">+up_proj: Linear(3584, 18944)</span>
+        <span class="field">+down_proj: Linear(18944, 3584)</span>
+        <span class="field">+act_fn: SiLU</span>
+        <span class="meth">+forward(x): down(silu(gate(x)) * up(x))</span>
+    }
+
+    <span class="cls">class Qwen2RotaryEmbedding</span> {
+        <span class="field">+rope_theta: 1000000.0</span>
+        <span class="field">+max_position_embeddings: 32768</span>
+        <span class="meth">+forward(x, position_ids) → (cos, sin)</span>
+    }
+
+    <span class="cls">class NaiveCache</span> {
+        <span class="field">+key_cache: Dict[layer_idx → Tensor]</span>
+        <span class="field">+value_cache: Dict[layer_idx → Tensor]</span>
+        <span class="field">+num_layers: 28</span>
+    }
+
+    <span class="cls">class Qwen2RMSNorm</span> {
+        <span class="field">+weight: Parameter(dim)</span>
+        <span class="field">+eps: 1e-6</span>
+        <span class="meth">+forward(x): x * rsqrt(mean(x²) + eps) * weight</span>
+    }
+
+    <span class="cls">class BaseNavitOutputWithPast</span> {
+        <span class="field">+packed_query_sequence: Tensor</span>
+        <span class="field">+past_key_values: NaiveCache</span>
+    }
+
+    <span class="rel">Qwen2ForCausalLM *-- Qwen2Model : model</span>
+    <span class="rel">Qwen2Model *-- Qwen2MoTDecoderLayer : layers[28]</span>
+    <span class="rel">Qwen2Model *-- Qwen2RotaryEmbedding : rotary_emb</span>
+    <span class="rel">Qwen2Model *-- Qwen2RMSNorm : norm, norm_moe_gen</span>
+    <span class="rel">Qwen2MoTDecoderLayer *-- PackedAttentionMoT : self_attn</span>
+    <span class="rel">Qwen2MoTDecoderLayer *-- Qwen2MLP : mlp, mlp_moe_gen</span>
+    <span class="rel">Qwen2MoTDecoderLayer *-- Qwen2RMSNorm : layernorms (×4)</span>
+    <span class="rel">PackedAttentionMoT --|> Qwen2Attention : inherits</span>
+    <span class="rel">Qwen2Model ..|> BaseNavitOutputWithPast : returns</span>
+    <span class="rel">PackedAttentionMoT ..> NaiveCache : reads/writes</span></pre>
+</div>
+
+<div class="uml-card">
+  <h2>Composition Summary</h2>
+  <pre class="uml"><span class="cls">Qwen2ForCausalLM</span>
+├── <span class="field">model</span>: <span class="cls">Qwen2Model</span>
+│   ├── <span class="field">embed_tokens</span>: Embedding(<span class="d" style="color:var(--yel)">152064, 3584</span>)
+│   ├── <span class="field">rotary_emb</span>:  <span class="cls">Qwen2RotaryEmbedding</span>(theta=1M)
+│   ├── <span class="field">layers</span> [0..27]: <span class="cls">Qwen2MoTDecoderLayer</span>
+│   │   ├── <span class="field">self_attn</span>: <span class="cls">PackedAttentionMoT</span>
+│   │   │   ├── <span style="color:var(--org)">Understanding:</span> q/k/v/o_proj, q/k_norm
+│   │   │   ├── <span style="color:var(--pur)">Generation:</span>    q/k/v/o_proj_moe_gen, q/k_norm_moe_gen
+│   │   │   └── Shared: <span class="meth">flash_attn_varlen_func</span> + RoPE + KV Cache
+│   │   ├── <span style="color:var(--org)">input_layernorm</span> / <span style="color:var(--pur)">input_layernorm_moe_gen</span>
+│   │   ├── <span style="color:var(--org)">mlp</span>: gate(<span class="d" style="color:var(--yel)">3584→18944</span>) * up(<span class="d" style="color:var(--yel)">3584→18944</span>) → down(<span class="d" style="color:var(--yel)">18944→3584</span>)
+│   │   ├── <span style="color:var(--pur)">mlp_moe_gen</span>: <span style="color:var(--tx3)">(same dims)</span>
+│   │   └── <span style="color:var(--org)">post_attention_layernorm</span> / <span style="color:var(--pur)">post_attention_layernorm_moe_gen</span>
+│   ├── <span class="field">norm</span>:         RMSNorm(<span class="d" style="color:var(--yel)">3584</span>) <span style="color:var(--tx3)">← understanding tokens</span>
+│   └── <span class="field">norm_moe_gen</span>: RMSNorm(<span class="d" style="color:var(--yel)">3584</span>) <span style="color:var(--tx3)">← generation tokens</span>
+└── <span class="field">lm_head</span>: Linear(<span class="d" style="color:var(--yel)">3584, 152064</span>) <span style="color:var(--tx3)">← text output only</span>
+
+<span class="note">Total parameters per MoT layer ≈ 2 × standard Qwen2 layer
+  Understanding expert: ~250M params  |  Generation expert: ~250M params
+  28 layers × 500M ≈ 14B total  (7B active for any given token)</span></pre>
+</div>
+
+</div><!-- /view-uml -->
+
+</div><!-- /wrap -->
+
+<script>
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('view-'+t.dataset.view).classList.add('active');
+    // re-trigger animations for dataflow
+    if(t.dataset.view==='dataflow'){
+      document.querySelectorAll('.df-step').forEach(s=>{s.style.animation='none';s.offsetHeight;s.style.animation=''});
+    }
+  });
+});
+</script>
+</body>
+</html>

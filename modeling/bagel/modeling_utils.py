@@ -74,15 +74,20 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
+
+    For BAGEL-7B-MoT (hidden_size=3584):
+        timestep_embedding: scalar t → sinusoidal [256]
+        mlp: Linear(256, 3584) → SiLU → Linear(3584, 3584)
+        Output: [N, 3584] — added to each latent token's embedding
     """
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),  # (256, 3584)
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.Linear(hidden_size, hidden_size, bias=True),              # (3584, 3584)
         )
-        self.frequency_embedding_size = frequency_embedding_size
+        self.frequency_embedding_size = frequency_embedding_size  # 256
 
     @staticmethod
     def timestep_embedding(t, dim, max_period=10000):
@@ -111,11 +116,17 @@ class TimestepEmbedder(nn.Module):
 
 
 class MLPconnector(nn.Module):
+    """
+    Projects ViT features into LLM hidden space.
+
+    For BAGEL-7B-MoT (vit_hidden=1152, llm_hidden=3584, act=gelu_pytorch_tanh):
+        fc1: Linear(1152, 3584) → gelu → fc2: Linear(3584, 3584)
+    """
     def __init__(self, in_dim: int, out_dim: int, hidden_act: str):
         super().__init__()
         self.activation_fn = ACT2FN[hidden_act]
-        self.fc1 = nn.Linear(in_dim, out_dim)
-        self.fc2 = nn.Linear(out_dim, out_dim)
+        self.fc1 = nn.Linear(in_dim, out_dim)    # (1152, 3584)
+        self.fc2 = nn.Linear(out_dim, out_dim)   # (3584, 3584)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.fc1(hidden_states)
@@ -125,6 +136,14 @@ class MLPconnector(nn.Module):
 
 
 class PositionEmbedding(nn.Module):
+    """
+    Frozen 2D sincos position embeddings for image patches.
+
+    For BAGEL-7B-MoT:
+        latent_pos_embed: PositionEmbedding(32, 3584) → 32²=1024 positions (or 64²=4096 at inference)
+        vit_pos_embed:    PositionEmbedding(70, 3584) → 70²=4900 positions
+    pos_embed: [max_patches², hidden_size], frozen (requires_grad=False)
+    """
     def __init__(self, max_num_patch_per_side, hidden_size):
         super().__init__()
         self.max_num_patch_per_side = max_num_patch_per_side

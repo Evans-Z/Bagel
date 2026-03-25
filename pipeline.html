@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAGEL Pipeline Visualization</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232732;
+    --border: #2e3344;
+    --text: #e4e6ef;
+    --text2: #9196ab;
+    --accent: #6c8cff;
+    --accent2: #4a6aef;
+    --green: #34d399;
+    --orange: #fb923c;
+    --pink: #f472b6;
+    --purple: #a78bfa;
+    --cyan: #22d3ee;
+    --red: #f87171;
+    --yellow: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+  .header {
+    text-align: center;
+    padding: 40px 20px 20px;
+  }
+  .header h1 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+  }
+  .header p { color: var(--text2); font-size: 0.95rem; }
+
+  /* Mode Tabs */
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    padding: 20px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    padding: 12px 28px;
+    border-radius: 12px;
+    border: 1.5px solid var(--border);
+    background: var(--surface);
+    color: var(--text2);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    user-select: none;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active {
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 4px 20px rgba(108,140,255,0.3);
+  }
+
+  /* Pipeline Container */
+  .pipeline-wrap {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px 60px;
+  }
+
+  /* Step styling */
+  .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+    margin-bottom: 8px;
+    opacity: 0;
+    transform: translateY(20px);
+    animation: fadeUp 0.5s forwards;
+  }
+  .step:nth-child(1) { animation-delay: 0.05s; }
+  .step:nth-child(2) { animation-delay: 0.1s; }
+  .step:nth-child(3) { animation-delay: 0.15s; }
+  .step:nth-child(4) { animation-delay: 0.2s; }
+  .step:nth-child(5) { animation-delay: 0.25s; }
+  .step:nth-child(6) { animation-delay: 0.3s; }
+  .step:nth-child(7) { animation-delay: 0.35s; }
+  .step:nth-child(8) { animation-delay: 0.4s; }
+  .step:nth-child(9) { animation-delay: 0.45s; }
+
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .step-num {
+    flex-shrink: 0;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-top: 18px;
+  }
+  .step-content {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 24px;
+    position: relative;
+  }
+  .step-title {
+    font-weight: 700;
+    font-size: 1.05rem;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .step-desc {
+    color: var(--text2);
+    font-size: 0.88rem;
+    line-height: 1.65;
+  }
+  .step-desc code {
+    background: var(--surface2);
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    color: var(--cyan);
+    border: 1px solid var(--border);
+  }
+
+  /* Data flow box */
+  .flow-box {
+    margin-top: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.8;
+    color: var(--text2);
+    overflow-x: auto;
+  }
+  .flow-box .dim { color: var(--yellow); }
+  .flow-box .op { color: var(--pink); }
+  .flow-box .arrow { color: var(--green); }
+  .flow-box .comment { color: #555e78; font-style: italic; }
+  .flow-box .module { color: var(--accent); font-weight: 600; }
+
+  /* Connector arrow between steps */
+  .connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0 0 18px;
+    height: 28px;
+  }
+  .connector svg { opacity: 0.35; }
+
+  /* Color themes for different components */
+  .step-num.input { background: rgba(34,211,238,0.15); color: var(--cyan); }
+  .step-num.vit { background: rgba(251,146,60,0.15); color: var(--orange); }
+  .step-num.vae-enc { background: rgba(167,139,250,0.15); color: var(--purple); }
+  .step-num.llm { background: rgba(108,140,255,0.15); color: var(--accent); }
+  .step-num.denoise { background: rgba(244,114,182,0.15); color: var(--pink); }
+  .step-num.cfg { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .step-num.decode { background: rgba(52,211,153,0.15); color: var(--green); }
+  .step-num.output { background: rgba(248,113,113,0.15); color: var(--red); }
+  .step-num.text-gen { background: rgba(52,211,153,0.15); color: var(--green); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .badge-und { background: rgba(251,146,60,0.15); color: var(--orange); }
+  .badge-gen { background: rgba(167,139,250,0.15); color: var(--purple); }
+  .badge-both { background: rgba(108,140,255,0.15); color: var(--accent); }
+  .badge-shared { background: rgba(52,211,153,0.15); color: var(--green); }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    max-width: 1200px;
+    margin: 0 auto 30px;
+    padding: 0 20px;
+  }
+  .arch-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+  }
+  .arch-title {
+    text-align: center;
+    font-weight: 700;
+    font-size: 1rem;
+    margin-bottom: 20px;
+    color: var(--text2);
+  }
+
+  /* SVG Architecture */
+  .arch-svg-wrap {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+  .arch-svg-wrap svg text {
+    font-family: 'Inter', -apple-system, sans-serif;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: var(--text2);
+  }
+  .legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 3px;
+  }
+
+  .hidden { display: none; }
+
+  /* KV Cache visual */
+  .kv-visual {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .kv-block {
+    height: 22px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #fff;
+    padding: 0 6px;
+    white-space: nowrap;
+  }
+  .kv-text-block { background: rgba(108,140,255,0.6); }
+  .kv-vit-block { background: rgba(251,146,60,0.5); }
+  .kv-vae-block { background: rgba(167,139,250,0.5); }
+  .kv-noise-block { background: rgba(244,114,182,0.4); border: 1px dashed rgba(244,114,182,0.7); }
+  .kv-label { font-size: 0.72rem; color: var(--text2); margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>BAGEL Pipeline Visualizer</h1>
+  <p>Interactive walkthrough of Bytedance's Unified Multimodal Model — trace data through every step</p>
+</div>
+
+<!-- Architecture Overview SVG -->
+<div class="arch-diagram">
+  <div class="arch-box">
+    <div class="arch-title">Model Architecture Overview</div>
+    <div class="arch-svg-wrap">
+      <svg width="920" height="340" viewBox="0 0 920 340">
+        <!-- Input side -->
+        <rect x="20" y="20" width="130" height="50" rx="10" fill="rgba(34,211,238,0.12)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="85" y="50" text-anchor="middle" fill="#22d3ee" font-size="13" font-weight="600">Text Input</text>
+        <rect x="20" y="90" width="130" height="50" rx="10" fill="rgba(34,211,238,0.12)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="85" y="120" text-anchor="middle" fill="#22d3ee" font-size="13" font-weight="600">Image Input</text>
+
+        <!-- Tokenizer -->
+        <rect x="190" y="20" width="120" height="50" rx="10" fill="rgba(108,140,255,0.12)" stroke="#6c8cff" stroke-width="1.5"/>
+        <text x="250" y="43" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="600">Tokenizer</text>
+        <text x="250" y="58" text-anchor="middle" fill="#555e78" font-size="10">embed_tokens</text>
+
+        <!-- ViT -->
+        <rect x="190" y="90" width="120" height="50" rx="10" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="250" y="110" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">SigLIP ViT</text>
+        <text x="250" y="126" text-anchor="middle" fill="#555e78" font-size="10">semantic features</text>
+
+        <!-- VAE Encoder -->
+        <rect x="190" y="160" width="120" height="50" rx="10" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="250" y="180" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">VAE Encoder</text>
+        <text x="250" y="196" text-anchor="middle" fill="#555e78" font-size="10">pixel → latent</text>
+
+        <!-- Connector MLP -->
+        <rect x="345" y="90" width="95" height="50" rx="10" fill="rgba(251,146,60,0.08)" stroke="#fb923c" stroke-width="1" stroke-dasharray="4"/>
+        <text x="392" y="113" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="600">Connector</text>
+        <text x="392" y="128" text-anchor="middle" fill="#555e78" font-size="9">MLP</text>
+
+        <!-- vae2llm -->
+        <rect x="345" y="160" width="95" height="50" rx="10" fill="rgba(167,139,250,0.08)" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4"/>
+        <text x="392" y="183" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">vae2llm</text>
+        <text x="392" y="198" text-anchor="middle" fill="#555e78" font-size="9">+ timestep + pos</text>
+
+        <!-- Main LLM Box -->
+        <rect x="475" y="10" width="240" height="260" rx="14" fill="rgba(108,140,255,0.06)" stroke="#6c8cff" stroke-width="2"/>
+        <text x="595" y="36" text-anchor="middle" fill="#6c8cff" font-size="14" font-weight="700">Qwen2 LLM (MoT)</text>
+
+        <!-- Understanding Expert -->
+        <rect x="490" y="52" width="100" height="80" rx="8" fill="rgba(251,146,60,0.1)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="540" y="75" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="700">Understand</text>
+        <text x="540" y="90" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="700">Expert</text>
+        <text x="540" y="108" text-anchor="middle" fill="#555e78" font-size="9">q/k/v/o_proj</text>
+        <text x="540" y="120" text-anchor="middle" fill="#555e78" font-size="9">mlp, layernorm</text>
+
+        <!-- Generation Expert -->
+        <rect x="600" y="52" width="100" height="80" rx="8" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="650" y="75" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">Generation</text>
+        <text x="650" y="90" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">Expert</text>
+        <text x="650" y="108" text-anchor="middle" fill="#555e78" font-size="9">*_moe_gen</text>
+        <text x="650" y="120" text-anchor="middle" fill="#555e78" font-size="9">mlp, layernorm</text>
+
+        <!-- Shared Attention -->
+        <rect x="490" y="145" width="210" height="45" rx="8" fill="rgba(52,211,153,0.1)" stroke="#34d399" stroke-width="1"/>
+        <text x="595" y="167" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">Shared Flash Attention + RoPE</text>
+        <text x="595" y="181" text-anchor="middle" fill="#555e78" font-size="9">all tokens attend to all tokens</text>
+
+        <!-- x N layers -->
+        <text x="595" y="215" text-anchor="middle" fill="#555e78" font-size="11">× N decoder layers</text>
+
+        <!-- KV Cache -->
+        <rect x="490" y="225" width="210" height="35" rx="8" fill="rgba(251,191,36,0.1)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="595" y="247" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">KV Cache (NaiveCache)</text>
+
+        <!-- Output side -->
+        <rect x="750" y="20" width="150" height="50" rx="10" fill="rgba(52,211,153,0.12)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="825" y="40" text-anchor="middle" fill="#34d399" font-size="12" font-weight="600">lm_head → Text</text>
+        <text x="825" y="56" text-anchor="middle" fill="#555e78" font-size="10">understanding output</text>
+
+        <rect x="750" y="90" width="150" height="50" rx="10" fill="rgba(244,114,182,0.12)" stroke="#f472b6" stroke-width="1.5"/>
+        <text x="825" y="110" text-anchor="middle" fill="#f472b6" font-size="12" font-weight="600">llm2vae → Denoise</text>
+        <text x="825" y="126" text-anchor="middle" fill="#555e78" font-size="10">generation output</text>
+
+        <!-- VAE Decoder -->
+        <rect x="750" y="160" width="150" height="50" rx="10" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="825" y="180" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">VAE Decoder</text>
+        <text x="825" y="196" text-anchor="middle" fill="#555e78" font-size="10">latent → pixel</text>
+
+        <!-- Final output -->
+        <rect x="750" y="230" width="150" height="50" rx="10" fill="rgba(248,113,113,0.12)" stroke="#f87171" stroke-width="1.5"/>
+        <text x="825" y="255" text-anchor="middle" fill="#f87171" font-size="13" font-weight="600">Output Image</text>
+
+        <!-- Arrows -->
+        <defs>
+          <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#555e78"/></marker>
+        </defs>
+        <!-- Text → Tokenizer -->
+        <line x1="150" y1="45" x2="186" y2="45" stroke="#555e78" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- Image → ViT -->
+        <line x1="150" y1="115" x2="186" y2="115" stroke="#555e78" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- Image → VAE Enc -->
+        <line x1="130" y1="140" x2="130" y2="185" stroke="#555e78" stroke-width="1" stroke-dasharray="3"/>
+        <line x1="130" y1="185" x2="186" y2="185" stroke="#555e78" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- Tokenizer → LLM -->
+        <line x1="310" y1="45" x2="471" y2="45" stroke="#6c8cff" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- ViT → Connector → LLM -->
+        <line x1="310" y1="115" x2="341" y2="115" stroke="#fb923c" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="440" y1="115" x2="471" y2="115" stroke="#fb923c" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- VAE Enc → vae2llm → LLM -->
+        <line x1="310" y1="185" x2="341" y2="185" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="440" y1="185" x2="471" y2="185" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- LLM → Text Output -->
+        <line x1="715" y1="45" x2="746" y2="45" stroke="#34d399" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- LLM → Denoise -->
+        <line x1="715" y1="115" x2="746" y2="115" stroke="#f472b6" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- Denoise → VAE Dec -->
+        <line x1="825" y1="140" x2="825" y2="156" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ah)"/>
+        <!-- VAE Dec → Output -->
+        <line x1="825" y1="210" x2="825" y2="226" stroke="#f87171" stroke-width="1.5" marker-end="url(#ah)"/>
+
+        <!-- Denoise loop arrow -->
+        <path d="M 900 115 Q 920 115 920 80 Q 920 45 900 45" fill="none" stroke="#f472b6" stroke-width="1" stroke-dasharray="4"/>
+        <text x="910" y="85" fill="#f472b6" font-size="9" font-weight="600">×49</text>
+
+        <!-- Routing labels -->
+        <text x="490" y="310" fill="#fb923c" font-size="10">text + ViT tokens → Understand Expert</text>
+        <text x="490" y="326" fill="#a78bfa" font-size="10">VAE latent tokens → Generation Expert</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#22d3ee"></div> Input</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#fb923c"></div> Understanding path</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#a78bfa"></div> Generation path</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#6c8cff"></div> Shared LLM</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#34d399"></div> Text output</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f472b6"></div> Image output</div>
+    </div>
+  </div>
+</div>
+
+<!-- Mode Tabs -->
+<div class="tabs">
+  <div class="tab active" data-mode="t2i">📝 Text → Image</div>
+  <div class="tab" data-mode="i2t">🖼️ Image → Text</div>
+  <div class="tab" data-mode="edit">🖌️ Image Editing</div>
+</div>
+
+<!-- TEXT TO IMAGE Pipeline -->
+<div class="pipeline-wrap" id="pipeline-t2i">
+  <div class="step">
+    <div class="step-num input">1</div>
+    <div class="step-content">
+      <div class="step-title">📝 User Input</div>
+      <div class="step-desc">
+        User enters a text prompt, e.g. <code>"A cat sitting on a windowsill at sunset"</code>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num llm">2</div>
+    <div class="step-content">
+      <div class="step-title">🔤 Tokenize &amp; Embed <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        The text is tokenized by <code>Qwen2Tokenizer</code>, wrapped with special tokens, and embedded via <code>embed_tokens()</code>.
+        Then run through all LLM layers using the <b>understanding expert</b> to build the KV cache.
+      </div>
+      <div class="flow-box">
+        <span class="op">"A cat sitting on a windowsill"</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> tokenizer.encode() <span class="arrow">→</span> <span class="dim">[&lt;bos&gt;, 32, 8415, ..., &lt;eos&gt;]</span> &nbsp; <span class="comment">// 10 tokens</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">embed_tokens</span>() <span class="arrow">→</span> <span class="dim">[10, 3584]</span> &nbsp; <span class="comment">// embed to hidden dim</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">forward_cache_update_text</span>() <span class="arrow">→</span> <b>KV cache updated</b>
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-text-block" style="width:140px">text: 10 tokens</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num cfg">3</div>
+    <div class="step-content">
+      <div class="step-title">🔀 Prepare 3 CFG Contexts</div>
+      <div class="step-desc">
+        Three separate KV caches are prepared for Classifier-Free Guidance. Each stores a different subset of context.
+        During the denoising loop, the model will run 3 forward passes per step — one against each cache.
+      </div>
+      <div class="flow-box">
+        <span class="module">gen_context</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = text KV &nbsp; <span class="comment">// full context → main prediction</span><br>
+        <span class="module">cfg_text_context</span> = empty &nbsp;&nbsp;&nbsp; <span class="comment">// no text → "what would model do without the prompt?"</span><br>
+        <span class="module">cfg_img_context</span>&nbsp; = text KV &nbsp; <span class="comment">// same as full (no input image in T2I)</span>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num denoise">4</div>
+    <div class="step-content">
+      <div class="step-title">🎲 Initialize Noise Latent</div>
+      <div class="step-desc">
+        A random Gaussian noise tensor is created in the VAE latent space, sized to produce the target image.
+        The latent is "patchified" — grouped into 2×2 patches.
+      </div>
+      <div class="flow-box">
+        Target image: <span class="dim">1024 × 1024</span> pixels<br>
+        <span class="arrow">→</span> latent_downsample = vae_down(<span class="dim">8</span>) × patch(<span class="dim">2</span>) = <span class="dim">16</span><br>
+        <span class="arrow">→</span> grid: <span class="dim">64 × 64</span> = <span class="dim">4096</span> latent tokens<br>
+        <span class="arrow">→</span> each token: <span class="dim">2² × 16ch = 64</span> dims<br>
+        <span class="arrow">→</span> <span class="module">packed_init_noises</span>: <span class="dim">[4096, 64]</span> ~ N(0, 1)
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num denoise">5</div>
+    <div class="step-content">
+      <div class="step-title">🔄 Denoising Loop × 49 steps <span class="badge badge-gen">Generation Expert</span></div>
+      <div class="step-desc">
+        The core generation loop. At each step, the noisy latent is projected into the LLM, processed, and a velocity is predicted.
+        The velocity points from data toward noise, so we subtract it to move from noise toward the clean image.
+      </div>
+      <div class="flow-box">
+        <span class="comment">// For each timestep t = 1.0 → 0.02 (49 steps):</span><br><br>
+
+        <b>① Project latent into LLM space:</b><br>
+        &nbsp;&nbsp;x_t <span class="dim">[4096, 64]</span> <span class="arrow">→</span> <span class="module">vae2llm</span> <span class="arrow">→</span> <span class="dim">[4096, 3584]</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;+ <span class="module">time_embedder</span>(t) &nbsp; <span class="comment">// scalar t → [3584] via sinusoidal + MLP</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;+ <span class="module">latent_pos_embed</span> &nbsp; <span class="comment">// 2D sincos position for 64×64 grid</span><br><br>
+
+        <b>② Assemble sequence:</b><br>
+        &nbsp;&nbsp;[<span class="op">&lt;start_img&gt;</span>, <span class="dim">latent₁...latent₄₀₉₆</span>, <span class="op">&lt;end_img&gt;</span>]<br><br>
+
+        <b>③ Run LLM (3 passes for CFG):</b><br>
+        &nbsp;&nbsp;Pass 1: sequence + <span class="module">gen_context</span> KV &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> v_t &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="comment">// with text</span><br>
+        &nbsp;&nbsp;Pass 2: sequence + <span class="module">cfg_text_context</span> KV <span class="arrow">→</span> cfg_text_v_t <span class="comment">// without text</span><br>
+        &nbsp;&nbsp;<span class="comment">// Latent tokens → generation expert (q/k/v_moe_gen, mlp_moe_gen)</span><br>
+        &nbsp;&nbsp;<span class="comment">// Bracket tokens → understanding expert (q/k/v_proj, mlp)</span><br><br>
+
+        <b>④ Read velocity:</b><br>
+        &nbsp;&nbsp;output <span class="arrow">→</span> <span class="module">llm2vae</span> <span class="arrow">→</span> v_t <span class="dim">[4096, 64]</span><br><br>
+
+        <b>⑤ CFG:</b><br>
+        &nbsp;&nbsp;v_guided = cfg_text_v_t + <span class="dim">4.0</span> × (v_t − cfg_text_v_t)<br>
+        &nbsp;&nbsp;v_final &nbsp;= v_guided × <span class="module">renorm_scale</span><br><br>
+
+        <b>⑥ Update:</b><br>
+        &nbsp;&nbsp;<span class="op">x_t = x_t − v_final × dt</span> &nbsp; <span class="comment">// move from noise toward clean image</span>
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">Each step processes:</span>
+        <div class="kv-block kv-text-block" style="width: 80px">text (KV)</div>
+        <span style="color:var(--text2);font-size:0.7rem">+</span>
+        <div class="kv-block kv-noise-block" style="width: 140px">4096 latent (query)</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num decode">6</div>
+    <div class="step-content">
+      <div class="step-title">🖼️ VAE Decode</div>
+      <div class="step-desc">
+        The denoised latent is unpatchified back to spatial form, then decoded by the VAE into pixel space.
+      </div>
+      <div class="flow-box">
+        x_final <span class="dim">[4096, 64]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> reshape to <span class="dim">[1, 64, 64, 2, 2, 16]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> einsum "nhwpqc→nchpwq" <span class="arrow">→</span> <span class="dim">[1, 16, 128, 128]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">vae_model.decode</span>() <span class="arrow">→</span> <span class="dim">[1, 3, 1024, 1024]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> denormalize (×0.5+0.5) <span class="arrow">→</span> clamp [0,1] <span class="arrow">→</span> uint8
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num output">7</div>
+    <div class="step-content">
+      <div class="step-title">✅ Output</div>
+      <div class="step-desc">
+        A <code>1024 × 1024</code> PIL Image is returned and displayed in the Gradio UI.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- IMAGE TO TEXT Pipeline -->
+<div class="pipeline-wrap hidden" id="pipeline-i2t">
+  <div class="step">
+    <div class="step-num input">1</div>
+    <div class="step-content">
+      <div class="step-title">🖼️ User Input</div>
+      <div class="step-desc">
+        User uploads an image (e.g. a meme, 800×600) and asks a question: <code>"What's funny about this?"</code>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num vit">2</div>
+    <div class="step-content">
+      <div class="step-title">👁️ SigLIP ViT Encode <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        The image is patchified and encoded by SigLIP vision transformer to extract semantic features.
+        Only ViT is used (no VAE) because we need to <em>understand</em>, not generate.
+      </div>
+      <div class="flow-box">
+        Image <span class="dim">800×600</span> <span class="arrow">→</span> resize to <span class="dim">980×736</span> (ViT transform)<br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">patchify</span>(patch=14) <span class="arrow">→</span> <span class="dim">[3640, 588]</span> &nbsp; <span class="comment">// 70×52 patches, 14²×3 dims</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">SiglipVisionModel</span>:<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;patch_embedding <span class="arrow">→</span> <span class="dim">[3640, 1152]</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 2D RoPE (cos_h, sin_h, cos_w, sin_w)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;× 27 encoder layers (Flash Attention, bidirectional)<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;post_layernorm <span class="arrow">→</span> <span class="dim">[3640, 1152]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">connector</span> MLP <span class="arrow">→</span> <span class="dim">[3640, 3584]</span> &nbsp; <span class="comment">// project to LLM dim</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> + <span class="module">vit_pos_embed</span> (2D sincos)
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-vit-block" style="width:220px">ViT: 3640 + 2 bracket = 3642 tokens</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num llm">3</div>
+    <div class="step-content">
+      <div class="step-title">🔤 Tokenize Question <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        The question text is tokenized and cached. These tokens attend to the already-cached image tokens.
+      </div>
+      <div class="flow-box">
+        <span class="op">"What's funny about this?"</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> tokenize <span class="arrow">→</span> <span class="dim">[&lt;bos&gt;, What, 's, funny, about, this, ?, &lt;eos&gt;]</span> &nbsp; <span class="comment">// ~9 tokens</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">embed_tokens</span> <span class="arrow">→</span> <span class="dim">[9, 3584]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> LLM forward (attend to 3642 image KV + 9 self) <span class="arrow">→</span> cache updated
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-vit-block" style="width:180px">ViT: 3642 tokens</div>
+        <div class="kv-block kv-text-block" style="width:100px">text: 9 tokens</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num text-gen">4</div>
+    <div class="step-content">
+      <div class="step-title">💬 Autoregressive Text Generation <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        Starting from <code>&lt;bos&gt;</code>, the model generates one token at a time. Each new token attends to the full
+        KV cache (image + question + all previously generated tokens).
+      </div>
+      <div class="flow-box">
+        <span class="comment">// Repeat until &lt;eos&gt; or max_length:</span><br><br>
+        token <span class="arrow">→</span> <span class="module">embed_tokens</span> <span class="arrow">→</span> <span class="dim">[1, 3584]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> LLM forward (<span class="module">mode="und"</span>, attend to all <span class="dim">3651+</span> cached tokens)<br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">lm_head</span> <span class="arrow">→</span> logits <span class="dim">[151665]</span> &nbsp; <span class="comment">// vocab size</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> argmax (greedy) or sample(temperature=0.3)<br>
+        &nbsp;&nbsp;<span class="arrow">→</span> next token ID <span class="arrow">→</span> append to KV cache <span class="arrow">→</span> repeat<br><br>
+        <span class="comment">// Each generated token: 1 embed + 1 LLM forward + 1 lm_head</span><br>
+        <span class="comment">// KV cache grows by 1 each step</span>
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">Growing cache:</span>
+        <div class="kv-block kv-vit-block" style="width:130px">image (3642)</div>
+        <div class="kv-block kv-text-block" style="width:80px">question (9)</div>
+        <div class="kv-block" style="width:130px;background:rgba(52,211,153,0.4)">generated (1, 2, 3...)</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num output">5</div>
+    <div class="step-content">
+      <div class="step-title">✅ Output</div>
+      <div class="step-desc">
+        The generated token IDs are decoded by the tokenizer. Special tokens (<code>&lt;|im_start|&gt;</code>, <code>&lt;|im_end|&gt;</code>) are stripped.
+      </div>
+      <div class="flow-box">
+        token_ids <span class="arrow">→</span> <span class="module">tokenizer.decode</span>() <span class="arrow">→</span> <span class="op">"The humor in this meme comes from the contrast between..."</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- IMAGE EDITING Pipeline -->
+<div class="pipeline-wrap hidden" id="pipeline-edit">
+  <div class="step">
+    <div class="step-num input">1</div>
+    <div class="step-content">
+      <div class="step-title">🖼️ + 📝 User Input</div>
+      <div class="step-desc">
+        User uploads an image (e.g. a photo of a woman, 1024×768) and provides an edit instruction:
+        <code>"She boards a modern subway, wearing the same clothes"</code>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num vae-enc">2</div>
+    <div class="step-content">
+      <div class="step-title">🟣 VAE Encode Input Image <span class="badge badge-gen">Generation Expert</span></div>
+      <div class="step-desc">
+        The input image is encoded by the VAE into latent space, patchified, projected, and cached.
+        The <b>generation expert</b> processes VAE latent tokens (while bracket tokens use the understanding expert).
+      </div>
+      <div class="flow-box">
+        Image <span class="dim">1024×768</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">vae_model.encode</span>() <span class="arrow">→</span> latent <span class="dim">[1, 16, 128, 96]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> patchify (2×2) <span class="arrow">→</span> <span class="dim">[64×48 = 3072, 64]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">vae2llm</span> + <span class="module">time_embed</span>(t=0) + <span class="module">pos_embed</span> <span class="arrow">→</span> <span class="dim">[3072, 3584]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> LLM forward (<span class="module">mode="gen"</span>) <span class="arrow">→</span> cache 3074 tokens (3072 + 2 brackets)
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-vae-block" style="width:200px">VAE latent: 3074 tokens</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num vit">3</div>
+    <div class="step-content">
+      <div class="step-title">👁️ SigLIP ViT Encode Same Image <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        The <b>same image</b> is also encoded by SigLIP ViT for semantic understanding. This gives the model
+        both pixel-level (VAE) and semantic-level (ViT) representations of the input.
+      </div>
+      <div class="flow-box">
+        Same image <span class="dim">1024×768</span> (ViT transform → <span class="dim">980×736</span>)<br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">SiglipVisionModel</span> <span class="arrow">→</span> <span class="dim">[3640, 1152]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">connector</span> MLP <span class="arrow">→</span> <span class="dim">[3640, 3584]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> LLM forward (<span class="module">mode="und"</span>) <span class="arrow">→</span> cache 3642 tokens
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-vae-block" style="width:140px">VAE: 3074</div>
+        <div class="kv-block kv-vit-block" style="width:140px">ViT: 3642</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num llm">4</div>
+    <div class="step-content">
+      <div class="step-title">🔤 Tokenize Edit Instruction <span class="badge badge-und">Understanding Expert</span></div>
+      <div class="step-desc">
+        The edit instruction is tokenized and cached. These tokens can attend to both VAE and ViT image tokens.
+      </div>
+      <div class="flow-box">
+        <span class="op">"She boards a modern subway, wearing the same clothes"</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> tokenize <span class="arrow">→</span> <span class="dim">~14 tokens</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> LLM forward (attend to all <span class="dim">6716</span> cached tokens) <span class="arrow">→</span> cache updated
+      </div>
+      <div class="kv-visual">
+        <span class="kv-label">KV Cache:</span>
+        <div class="kv-block kv-vae-block" style="width:100px">VAE: 3074</div>
+        <div class="kv-block kv-vit-block" style="width:100px">ViT: 3642</div>
+        <div class="kv-block kv-text-block" style="width:90px">text: 14</div>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num cfg">5</div>
+    <div class="step-content">
+      <div class="step-title">🔀 Prepare 3 CFG Contexts</div>
+      <div class="step-desc">
+        The three contexts are snapshot at different points to enable dual CFG — guiding toward both text compliance and image preservation.
+      </div>
+      <div class="flow-box">
+        <span class="module">gen_context</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = VAE + ViT + text KV &nbsp; <span class="comment">// full context</span><br>
+        <span class="module">cfg_text_context</span> = VAE + ViT KV &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="comment">// image but NO text → "preserve the image"</span><br>
+        <span class="module">cfg_img_context</span>&nbsp; = text KV only &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span class="comment">// text but NO image → "follow the instruction"</span>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num denoise">6</div>
+    <div class="step-content">
+      <div class="step-title">🔄 Denoising Loop × 49 steps — Full 3-Pass CFG <span class="badge badge-gen">Generation Expert</span></div>
+      <div class="step-desc">
+        Same denoising loop as T2I, but now all <b>three</b> CFG passes are active since <code>cfg_img_scale=2.0</code>.
+        The dual guidance steers the output to follow the instruction while preserving the input image.
+      </div>
+      <div class="flow-box">
+        <span class="comment">// For each timestep t = 1.0 → 0.02:</span><br><br>
+
+        <b>Three LLM forward passes per step:</b><br>
+        &nbsp;&nbsp;Pass 1: noise + <span class="module">full KV</span> (img+text) &nbsp;<span class="arrow">→</span> v_t &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="comment">// conditioned on everything</span><br>
+        &nbsp;&nbsp;Pass 2: noise + <span class="module">text-cfg KV</span> (img) &nbsp;&nbsp;<span class="arrow">→</span> cfg_text_v_t &nbsp;<span class="comment">// no instruction text</span><br>
+        &nbsp;&nbsp;Pass 3: noise + <span class="module">img-cfg KV</span> (text) &nbsp;&nbsp;<span class="arrow">→</span> cfg_img_v_t &nbsp;&nbsp;<span class="comment">// no image</span><br><br>
+
+        <b>Dual CFG composition:</b><br>
+        &nbsp;&nbsp;v_text &nbsp;= cfg_text_v_t + <span class="dim">4.0</span> × (v_t − cfg_text_v_t) &nbsp;&nbsp;&nbsp; <span class="comment">// follow text</span><br>
+        &nbsp;&nbsp;v_final = cfg_img_v_t &nbsp;+ <span class="dim">2.0</span> × (v_text − cfg_img_v_t) &nbsp; <span class="comment">// preserve image</span><br>
+        &nbsp;&nbsp;v_final = v_final × <span class="module">renorm</span>(<span class="op">"text_channel"</span>)<br><br>
+
+        <b>Update:</b> <span class="op">x_t = x_t − v_final × dt</span>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num decode">7</div>
+    <div class="step-content">
+      <div class="step-title">🖼️ VAE Decode → Edited Image</div>
+      <div class="step-desc">
+        The denoised latent is unpatchified and decoded back to pixel space — producing the edited image at the same resolution as the input.
+      </div>
+      <div class="flow-box">
+        x_final <span class="dim">[3072, 64]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> reshape <span class="arrow">→</span> <span class="dim">[1, 16, 96, 128]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> <span class="module">vae_model.decode</span>() <span class="arrow">→</span> <span class="dim">[1, 3, 768, 1024]</span><br>
+        &nbsp;&nbsp;<span class="arrow">→</span> PIL Image <span class="dim">1024×768</span>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><svg width="20" height="24"><path d="M10 0 L10 24" stroke="#2e3344" stroke-width="2" stroke-dasharray="4"/><polygon points="6,18 10,24 14,18" fill="#2e3344"/></svg></div>
+
+  <div class="step">
+    <div class="step-num output">8</div>
+    <div class="step-content">
+      <div class="step-title">✅ Output</div>
+      <div class="step-desc">
+        The edited image is returned — showing the woman in a subway, wearing the same clothes, at the original resolution.
+        The dual-encoder approach (VAE for pixel fidelity + ViT for semantic understanding) enables intelligent editing.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.tab');
+  const pipelines = {
+    t2i: document.getElementById('pipeline-t2i'),
+    i2t: document.getElementById('pipeline-i2t'),
+    edit: document.getElementById('pipeline-edit'),
+  };
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const mode = tab.dataset.mode;
+      Object.values(pipelines).forEach(p => p.classList.add('hidden'));
+      pipelines[mode].classList.remove('hidden');
+
+      // Re-trigger animations
+      const steps = pipelines[mode].querySelectorAll('.step');
+      steps.forEach(s => {
+        s.style.animation = 'none';
+        s.offsetHeight; // trigger reflow
+        s.style.animation = '';
+      });
+    });
+  });
+</script>
+</body>
+</html>

@@ -143,23 +143,33 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
 
 class SiglipVisionEmbeddings(nn.Module):
+    """
+    Patch embedding for SigLIP ViT.
+
+    For BAGEL-7B-MoT (hidden=1152, image=980, patch=14, channels=3):
+        patch_embedding: Conv2d(3, 1152, kernel_size=14, stride=14) → converted to Linear(588, 1152)
+        num_patches_per_side = 980 / 14 = 70
+        num_patches = 70² = 4900
+        Uses RoPE (no learned position_embedding) since config.rope=False is overridden in app.py
+    """
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        self.embed_dim = config.hidden_size
-        self.image_size = config.image_size
-        self.patch_size = config.patch_size
+        self.embed_dim = config.hidden_size    # 1152
+        self.image_size = config.image_size    # 980
+        self.patch_size = config.patch_size    # 14
 
         self.patch_embedding = nn.Conv2d(
-            in_channels=config.num_channels,
-            out_channels=self.embed_dim,
-            kernel_size=self.patch_size,
-            stride=self.patch_size,
+            in_channels=config.num_channels,   # 3
+            out_channels=self.embed_dim,       # 1152
+            kernel_size=self.patch_size,       # 14
+            stride=self.patch_size,            # 14
             padding="valid",
         )
+        # After convert_conv2d_to_linear(): becomes Linear(14²×3=588, 1152)
 
-        self.num_patches_per_side = self.image_size // self.patch_size
-        self.num_patches = self.num_patches_per_side**2
+        self.num_patches_per_side = self.image_size // self.patch_size  # 70
+        self.num_patches = self.num_patches_per_side**2                # 4900
         self.num_positions = self.num_patches
         if not config.rope:
             self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
@@ -196,6 +206,17 @@ class SiglipVisionEmbeddings(nn.Module):
 
 
 class SiglipFlashAttention2(SiglipAttention):
+    """
+    Flash Attention for SigLIP with optional 2D RoPE.
+
+    For BAGEL-7B-MoT ViT (hidden=1152, heads=16):
+        q_proj:   Linear(1152, 1152)  — 16 heads × 72 head_dim
+        k_proj:   Linear(1152, 1152)
+        v_proj:   Linear(1152, 1152)
+        out_proj: Linear(1152, 1152)
+        head_dim = 1152 / 16 = 72
+        2D RoPE splits head_dim: 36 dims for height, 36 dims for width
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -245,12 +266,15 @@ class SiglipFlashAttention2(SiglipAttention):
 
 
 class SiglipMLP(nn.Module):
+    """
+    For BAGEL-7B-MoT ViT: fc1: Linear(1152, 4304), gelu, fc2: Linear(4304, 1152)
+    """
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.activation_fn = ACT2FN[config.hidden_act]
-        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)
-        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.activation_fn = ACT2FN[config.hidden_act]             # gelu_pytorch_tanh
+        self.fc1 = nn.Linear(config.hidden_size, config.intermediate_size)  # (1152, 4304)
+        self.fc2 = nn.Linear(config.intermediate_size, config.hidden_size)  # (4304, 1152)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = self.fc1(hidden_states)
@@ -260,13 +284,17 @@ class SiglipMLP(nn.Module):
 
 
 class SiglipEncoderLayer(nn.Module):
+    """
+    Single ViT encoder layer: LayerNorm → Attention → LayerNorm → MLP, with residuals.
+    For BAGEL-7B-MoT: LayerNorm(1152) → FlashAttn(16 heads, 72 dim) → LayerNorm(1152) → MLP(1152→4304→1152)
+    """
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
-        self.embed_dim = config.hidden_size
+        self.embed_dim = config.hidden_size          # 1152
         self.self_attn = SiglipFlashAttention2(config)
-        self.layer_norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
+        self.layer_norm1 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)  # LayerNorm(1152)
         self.mlp = SiglipMLP(config)
-        self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
+        self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)  # LayerNorm(1152)
 
     def forward(
         self,
@@ -328,19 +356,26 @@ class SiglipEncoder(nn.Module):
 
 
 class SiglipVisionTransformer(nn.Module):
+    """
+    For BAGEL-7B-MoT ViT (hidden=1152, heads=16, 26 layers after app.py -= 1):
+        embeddings:     SiglipVisionEmbeddings  — Linear(588, 1152)
+        rope:           RotaryEmbedding2D(36, 70, 70)  — 2D RoPE for 70×70 grid, 36 dims per axis
+        encoder:        26 × SiglipEncoderLayer
+        post_layernorm: LayerNorm(1152)
+    """
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        embed_dim = config.hidden_size
+        embed_dim = config.hidden_size  # 1152
 
         self.embeddings = SiglipVisionEmbeddings(config)
         if config.rope:
-            max_size = config.image_size // config.patch_size
-            dim_head = config.hidden_size // config.num_attention_heads
-            self.rope = RotaryEmbedding2D(dim_head // 2, max_size, max_size)
+            max_size = config.image_size // config.patch_size  # 980/14 = 70
+            dim_head = config.hidden_size // config.num_attention_heads  # 1152/16 = 72
+            self.rope = RotaryEmbedding2D(dim_head // 2, max_size, max_size)  # (36, 70, 70)
 
-        self.encoder = SiglipEncoder(config)
-        self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
+        self.encoder = SiglipEncoder(config)  # 26 layers (27 in config, -1 in app.py)
+        self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)  # LayerNorm(1152)
 
     def forward(
         self,

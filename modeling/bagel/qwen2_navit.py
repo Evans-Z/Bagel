@@ -379,12 +379,32 @@ class PackedAttention(Qwen2Attention):
 
 
 class PackedAttentionMoT(Qwen2Attention):
+    """
+    Mixture-of-Transformer-Experts attention: two complete sets of Q/K/V/O projections.
+
+    For BAGEL-7B-MoT (hidden=3584, heads=28, kv_heads=4, head_dim=128):
+        Understanding expert (text + ViT tokens):
+            q_proj:   Linear(3584, 3584, bias=True)   — 28 heads × 128 dim
+            k_proj:   Linear(3584, 512, bias=True)    — 4 KV heads × 128 dim (GQA: 7 heads share 1 KV)
+            v_proj:   Linear(3584, 512, bias=True)
+            o_proj:   Linear(3584, 3584, bias=False)
+            q_norm:   RMSNorm(128, eps=1e-6)
+            k_norm:   RMSNorm(128, eps=1e-6)
+        Generation expert (VAE latent tokens):
+            q_proj_moe_gen:  Linear(3584, 3584, bias=True)
+            k_proj_moe_gen:  Linear(3584, 512, bias=True)
+            v_proj_moe_gen:  Linear(3584, 512, bias=True)
+            o_proj_moe_gen:  Linear(3584, 3584, bias=False)
+            q_norm_moe_gen:  RMSNorm(128, eps=1e-6)
+            k_norm_moe_gen:  RMSNorm(128, eps=1e-6)
+    Routing is hard/deterministic by token type. Attention is shared (all tokens attend all).
+    """
     def __init__(self, config, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
         if self.config.qk_norm:
-            self.q_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.q_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)          # RMSNorm(128)
             self.k_norm = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-            self.q_norm_moe_gen = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.q_norm_moe_gen = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # RMSNorm(128)
             self.k_norm_moe_gen = Qwen2RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         else:
             self.q_norm = nn.Identity()
@@ -392,10 +412,11 @@ class PackedAttentionMoT(Qwen2Attention):
             self.q_norm_moe_gen = nn.Identity()
             self.k_norm_moe_gen = nn.Identity()
 
-        self.q_proj_moe_gen = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)
-        self.k_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj_moe_gen = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        # Generation expert projections (same shapes as the inherited understanding projections)
+        self.q_proj_moe_gen = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)        # (3584, 3584)
+        self.k_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True) # (3584, 512)
+        self.v_proj_moe_gen = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True) # (3584, 512)
+        self.o_proj_moe_gen = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)        # (3584, 3584)
 
     def forward(self, *args, **kwargs):
         if self.training:
@@ -685,6 +706,21 @@ class Qwen2DecoderLayer(nn.Module):
 
 
 class Qwen2MoTDecoderLayer(nn.Module):
+    """
+    Full MoT decoder layer: separate attention AND separate MLPs for understanding vs generation.
+
+    For BAGEL-7B-MoT (hidden=3584, intermediate=18944, rms_eps=1e-6):
+        Understanding expert:                          Generation expert:
+          self_attn.q/k/v/o_proj (see PackedAttentionMoT)  self_attn.q/k/v/o_proj_moe_gen
+          input_layernorm:        RMSNorm(3584)        input_layernorm_moe_gen:        RMSNorm(3584)
+          mlp:                                         mlp_moe_gen:
+            gate_proj: Linear(3584, 18944, bias=False)   gate_proj: Linear(3584, 18944, bias=False)
+            up_proj:   Linear(3584, 18944, bias=False)   up_proj:   Linear(3584, 18944, bias=False)
+            down_proj: Linear(18944, 3584, bias=False)   down_proj: Linear(18944, 3584, bias=False)
+          post_attention_layernorm: RMSNorm(3584)      post_attention_layernorm_moe_gen: RMSNorm(3584)
+
+    Total params per layer: ~2× a standard Qwen2 layer (7B active, 14B total across all 28 layers)
+    """
     def __init__(
         self, 
         config, 
@@ -692,15 +728,15 @@ class Qwen2MoTDecoderLayer(nn.Module):
         attn_module: Optional[Qwen2Attention] = PackedAttentionMoT,
     ):
         super().__init__()
-        self.hidden_size = config.hidden_size
+        self.hidden_size = config.hidden_size   # 3584
         self.freeze_und = config.freeze_und
 
         self.self_attn = attn_module(config, layer_idx)
 
-        self.mlp = Qwen2MLP(config)
-        self.mlp_moe_gen = Qwen2MLP(config)
-        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.input_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.mlp = Qwen2MLP(config)              # Understanding: SiLU gated MLP (3584 → 18944 → 3584)
+        self.mlp_moe_gen = Qwen2MLP(config)      # Generation:    SiLU gated MLP (3584 → 18944 → 3584)
+        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)          # RMSNorm(3584)
+        self.input_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)  # RMSNorm(3584)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -941,22 +977,32 @@ Decoder_layer_dict = {
 
 
 class Qwen2Model(Qwen2PreTrainedModel):
+    """
+    The Qwen2 transformer backbone (without LM head).
+
+    For BAGEL-7B-MoT:
+        embed_tokens:  Embedding(152064, 3584)          — vocab embeddings
+        layers:        28 × Qwen2MoTDecoderLayer        — MoT decoder stack
+        norm:          RMSNorm(3584, eps=1e-6)           — final norm (understanding tokens)
+        norm_moe_gen:  RMSNorm(3584, eps=1e-6)           — final norm (generation tokens)
+        rotary_emb:    Qwen2RotaryEmbedding(rope_theta=1e6, max_pos=32768)
+    """
     def __init__(self, config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
-        self.vocab_size = config.vocab_size
+        self.vocab_size = config.vocab_size      # 152064
         self.use_moe = 'Mo' in config.layer_module
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        layer_module = Decoder_layer_dict[config.layer_module]
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)  # (152064, 3584)
+        layer_module = Decoder_layer_dict[config.layer_module]  # Qwen2MoTDecoderLayer
         self.layers = nn.ModuleList(
-            [layer_module(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [layer_module(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]  # 28 layers
         )
 
-        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)          # RMSNorm(3584)
         if self.use_moe:
-            self.norm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = Qwen2RotaryEmbedding(config=config)
+            self.norm_moe_gen = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)  # separate norm for gen
+        self.rotary_emb = Qwen2RotaryEmbedding(config=config)  # rope_theta=1e6
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1093,13 +1139,20 @@ class Qwen2Model(Qwen2PreTrainedModel):
 
 
 class Qwen2ForCausalLM(Qwen2PreTrainedModel):
+    """
+    Qwen2 with a language modeling head.
+
+    For BAGEL-7B-MoT:
+        model:    Qwen2Model (28 MoT layers, 3584-dim)
+        lm_head:  Linear(3584, 152064, bias=False)  — projects to vocab logits
+    """
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
         self.model = Qwen2Model(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.vocab_size = config.vocab_size    # 152064
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)  # (3584, 152064)
 
         # Initialize weights and apply final processing
         self.post_init()
